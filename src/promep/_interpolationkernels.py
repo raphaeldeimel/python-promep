@@ -46,10 +46,9 @@ class InterpolationGaussian(object):
 
         #compute with of the gaussians, and where to suppress the tail completely
         delta = 1.0 / (size_stilde-1)
-        if sigma is None:
-            self.sigma = 1.0 * delta
-        else:
-            self.sigma = sigma
+
+        self.sigma = 1.0 * delta #no real need to change this to different widths
+
         self._clipAmount = _np.exp(-(1+clip_at_sigma**2))
 
         start = 0.0 - self._repeatExtremalSupports * delta
@@ -64,7 +63,7 @@ class InterpolationGaussian(object):
         #adjust scale once so the inteprolation vector is close to 1.0
         # This is different to [1], where the interpolation vector is always normalized
         # exact unit scale is not necessary though, and without normalizing we maintain a bell curve everywhere
-        scale =  _np.sum(self.getInterpolationVectorPosition(0.5))
+        scale =  _np.sum(self.getPhi(0.5)[0,:])
         self._b = (1.0 + self._clipAmount)  / scale #scale, but also adjust for the clipping offset
         self._clipAmount = self._clipAmount / scale #adjust clipping offset to the scale
 

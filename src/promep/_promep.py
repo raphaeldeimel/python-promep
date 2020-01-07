@@ -20,7 +20,7 @@ import os as _os
 import matplotlib.pyplot as _plt
 import matplotlib as _mpl
 
-from . import _namedtensors
+from . import _namedtensors, _interpolationkernels
 
 from  scipy.special import betainc as _betainc
 from sklearn import covariance as _sklearncovariance
@@ -106,58 +106,6 @@ _cmapCorrelations = _mpl.colors.LinearSegmentedColormap('Correlations', {
         }
 )
 
-def plotYSpaceCovarianceTensor(cov, normalized=True, interpolationKernel=None):
-        """
-        plot a correlation tensor of shape (mstates x dofs, mstates x dofs)
-        """
-        imgsize = cov.shape[0]*cov.shape[1]
-        image = _np.zeros((imgsize, imgsize))
-        mstates = cov.shape[0]
-        n_dofs = cov.shape[1]
-        if not normalized:
-            #compute the mean variance for effort and motion domains for normalizing them w.r.t. each other:
-            sigma_per_mstate = _np.sqrt(_np.mean(_t.getDiagView(cov), axis=1))
-            scaler = 1.0 / _np.dot(sigma_per_mstate[:,_np.newaxis], sigma_per_mstate[_np.newaxis,:])
-            cov = cov * scaler[:,_np.newaxis,:,_np.newaxis]
-        
-        #cov = _np.transpose(cov_reshaped, (1,0,2,4,3,5))
-        image =_np.reshape(cov, (imgsize,imgsize) )
-        gridvectorX = _np.arange(0, imgsize, 1)
-        gridvectorY = _np.arange(imgsize,0, -1)
-
-        fig = _plt.figure(figsize=(3.4,3.4))
-        _plt.pcolor(gridvectorX, gridvectorY,image, cmap=_cmapCorrelations, vmin=-1, vmax=1)
-        
-        _plt.axis([0, imgsize, 0,imgsize])
-        _plt.gca().set_aspect('equal', 'box')
-
-        for j in range(0,mstates):
-                if j== 0:
-                    linewidth=1.0
-                else:
-                    linewidth=0.1
-                _plt.axhline(j * n_dofs , color='k', linewidth=linewidth)
-                _plt.axvline(j * n_dofs, color='k', linewidth=linewidth)
-
-        if interpolationKernel is None:
-            elementnames = list(range(mstates,0,-1))
-        else:
-            elementnames = interpolationKernel.mStateNames
-        ticks = range(imgsize - n_dofs//2,0, -n_dofs)
-        _plt.xticks(ticks, elementnames)
-        ticks = range( n_dofs//2, imgsize, n_dofs)
-        _plt.yticks(ticks, elementnames)
-        _plt.colorbar(shrink=0.6, aspect=40, ticks=[-1,0,1], fraction=0.08)
-        _plt.title("Covariances (scaled)")
-        ax = _plt.gca()        
-        textlevel2_offset = 0.08
-#        _plt.text(0.25,-1.5*textlevel2_offset, "effort", horizontalalignment='center', verticalalignment='center', transform=ax.transAxes)
-#        _plt.text(0.75,-1.5*textlevel2_offset, "motion", horizontalalignment='center', verticalalignment='center', transform=ax.transAxes)
-#        _plt.text(-textlevel2_offset, 0.75, "effort", horizontalalignment='center', verticalalignment='center', rotation='vertical', transform=ax.transAxes)
-#        _plt.text(-textlevel2_offset, 0.25, "motion", horizontalalignment='center', verticalalignment='center', rotation='vertical', transform=ax.transAxes)
-        #_plt.tight_layout()
-
-
 
 class MechanicalStateDistribution(object):
 
@@ -179,31 +127,38 @@ class JointSpaceToJointSpaceTransform(object):
     
     """
     
-    def __init__(self, ntm, transform_name = 'T', reference_task_space='Xref', reference_joint_space='Yref'):
-        self._ntm = ntm
-        #self._ntm.registerBasisTensor('e_effort_effort', (('r', 'g'),('r', 'g')) (('effort',0), ('effort',0)), )
+    def __init__(self, ntm):
+        self._ntm = _namedtensors.NamedTensorsManager(ntm)
+        #Path to compute T:
+        self._ntm.registerTensor('Xref', (('rtilde','g', 'dtilde',),()) )        
+        self._ntm.registerTensor('Yref', (('r','g', 'd',),()) )        
         self._ntm.registerTensor('Jt', (('d',),('dtilde',)))
         self._ntm.registerTensor('Jinv', (('d',),('dtilde',)))
-        self._ntm.registerBasisTensor('e_effort_effort', (('r',),('r',)) (('effort',), ('effort',)), )
+        self._ntm.registerBasisTensor('e_effort_effort', (('r',),('rtilde',)), (('effort',), ('effort',)) )
+        self._ntm.registerBasisTensor('e_motion_motion', (('r',),('rtilde',)), (('motion',), ('motion',)) )
         self._ntm.registerContraction('e_effort_effort', 'Jt')
         self._ntm.registerContraction('e_motion_motion', 'Jinv')
-        self._ntm.registerAddition('e_effort_effort:Jt', 'e_motion_motion:Jinv', name='T')
-        self.reference_task_space = reference_task_space
-        self.reference_joint_space = reference_joint_space
+        self._ntm.registerAddition('e_effort_effort:Jt', 'e_motion_motion:Jinv', result_name='T') #has indices (('r', 'd')('rtilde', 'dtilde'))
         self._Jt  = _np.eye(self._ntm.indexSizes['d'])  #trivial Jacobian between joint space and joint space 
 
-    def setT(self):
-        """
-        set the T tensor 
-        """
-        Xref = self._ntm.tensorData[self.reference_task_space]   
-        Yref = self._ntm.tensorData[self.reference_joint_space]
-        #
-        #no computation to do here for joint to joint space mapping
-        #
-        self._ntm.tensorDataAsFlattened['Jt'][:,:] = self._Jt
-        self._ntm.tensorDataAsFlattened['Jinv'][:,:] = self._Jt 
+        #conceptually; to also consider dotJ:
+        #self._ntm.registerTensor('dotJinv', (('d',),('dtilde',)))
+        #self._ntm.registerBasisTenso('e_motion_1_motion_0', (('r',),('rtilde',)), (('motion',), ('motion',)) )
+        #self._ntm.registerContraction('e_motion_1_motion_0', 'dotJinv')        
+        #self._ntm.registerAddition('e_effort_effort:Jt+e_motion_motion:Jinv', 'e_motion_1_motion_0:dotJinv', result_name='T') #has indices (('r', 'd')('rtilde', 'dtilde'))
+        self.update()
+        
+    def update(self):
+        self._ntm.update()
+
+    def get_T_view(self):
+        return self._ntm.tensorData['T']
     
+    def get_Xref_view(self):
+        return self._ntm.tensorData['Xref']
+
+    def get_Yref_view(self):
+        return self._ntm.tensorData['Yref']
 
 
 
@@ -281,59 +236,43 @@ class ProMeP(object):
                   self._ntm.registerIndex(name, index_sizes[name], values=['motion', 'effort'])
             else:
                   self._ntm.registerIndex(name, index_sizes[name])
+                  
+        #hooks to compute tensors PHI and T:
+        self.phi_computer =  _interpolationkernels.InterpolationGaussian(self._ntm.indexSizes['gphi'], self._ntm.indexSizes['stilde'])  #should provide a getPhi method
+        self.T_computer = JointSpaceToJointSpaceTransform(self._ntm) #should implement a get_T_view(), get_Xref_view() and get_Yref_view() method
         
         
-        #register all tensors being used:
+        #register all tensors not being computed by operators:
+        #i.e. input tensors:
         self._ntm.registerTensor('Wmean', (('rtilde','gtilde','stilde','dtilde'),()) )
-        self._ntm.registerTensor('Wcov', (( 'rtilde','gtilde','stilde','dtilde'),( 'rtilde','gtilde','stilde','dtilde')) )
+        self._ntm.registerTensor('Wcov', (( 'rtilde','gtilde','stilde','dtilde'),( 'rtilde_','gtilde_','stilde_','dtilde_')) )
         self._ntm.registerTensor('PHI', (('gphi',),('stilde',)) )
-        self._ntm.registerTensor('P', (('g',),('gphi',)) )
-        self._ntm.registerTensor('Xref', (('r','gphi', 'dtilde',),()) )        
-        self._ntm.registerTensor('Yc', (('r','g', 'd',),()) )
-        self._ntm.registerTensor('Ymean', (('r','g', 'd',),('r','g', 'd',)) )
-        self._ntm.registerTensor('Ycov', (('r','g', 'd',),()) )
-        
+        self._ntm.registerTensor('P', (('g',),('gphi','gtilde')) )
+        self._ntm.registerTensor('Xref', (('rtilde','g', 'dtilde',),()), external_array = self.T_computer.get_Xref_view() )        
+        self._ntm.registerTensor('Yref', (('r','g', 'd',),()) , external_array = self.T_computer.get_Yref_view())
+        self._ntm.registerTensor('T', (('r','d'),('rtilde', 'dtilde')), external_array = self.T_computer.get_T_view())
         #register all operations being used on tensors:
-        
-        #Path to compute T:
-        self._ntm.registerTensor('Jt', (('d',),('dtilde',)))
-        self._ntm.registerTensor('Jinv', (('d',),('dtilde',)))
-        self._ntm.registerBasisTensor('e_effort_effort', (('r',),('rtilde',)), (('effort',), ('effort',)) )
-        self._ntm.registerBasisTensor('e_motion_motion', (('r',),('rtilde',)), (('motion',), ('motion',)) )
-        self._ntm.registerContraction('e_effort_effort', 'Jt')
-        self._ntm.registerContraction('e_motion_motion', 'Jinv')
-        self._ntm.registerAddition('e_effort_effort:Jt', 'e_motion_motion:Jinv', name='T') #has indices (('r', 'd')('rtilde', 'dtilde'))
-
-        #conceptually; to also consider dotJ:
-        self._ntm.registerTensor('dotJinv', (('d',),('dtilde',)))
-        self._ntm.registerBasisTensor('e_motion_1_motion_0', (('r',),('rtilde',)), (('motion',), ('motion',)) )
-        self._ntm.registerContraction('e_motion_1_motion_0', 'dotJinv')        
-        self._ntm.registerAddition('e_effort_effort:Jt+e_motion_motion:Jinv', 'e_motion_1_motion_0:dotJinv', name='T') #has indices (('r', 'd')('rtilde', 'dtilde'))
-
-
         
         #path to compute PSI:
         self._ntm.registerContraction('P', 'PHI')
-        self._ntm.registerContraction('T', 'P:PHI')
-        self._ntm.registerContraction('PHI', 'T:P:PHI', resultName='PSI')
+        self._ntm.registerContraction('T', 'P:PHI', result_name='PSI')
         self._ntm.registerTranspose('PSI')
         
         #compute any offsets required by the linearization of the task space map into T
         self._ntm.registerContraction('T', 'Xref')
-        self._ntm.registerSubtraction('Yref', 'T:Xref', resultName='O')
+        self._ntm.registerSubtraction('Yref', 'T:Xref', result_name='O')
         
         #project the mean of weights to mean of trajectory:
         self._ntm.registerContraction('PSI', 'Wmean')
-        self._ntm.registerAddition('PSI:Wmu', 'O', resultNAme='Ymean')
+        for key in self._ntm.tensorIndices:
+            print(f"{key}      {self._ntm.tensorIndices[key]}")
+        self._ntm.registerAddition('PSI:Wmean', 'O', result_name='Ymean')
         
         #project the covariances of weights to covariances of trajectory:
         self._ntm.registerContraction('PSI', 'Wcov')
-        self._ntm.registerContraction('PSI:Wcov', '(PSI)^t', resultName='Ycov')
+        self._ntm.registerContraction('PSI:Wcov', '(PSI)^t', result_name='Ycov')
 
 
-        #hooks to compute tensors PHI and T:
-        self.phi_computer =  _interpolationkernels.InterpolationGaussian(self._ntm.getSize('gphi'), self._ntm.getSize('stilde'))  #should provide a getPhi method
-        self.T_computer = JointSpaceToJointSpaceTransform(self._ntm) #should implement a getT() method
         
         
         self.phaseAssociable = True #indicate that this motion generator is parameterized by phase
@@ -341,8 +280,10 @@ class ProMeP(object):
         self.tolerance=1e-7
         
         self.expectedDuration = expected_duration
-        self._ntm.setTensor('Wmean', Wmean)
-        self._ntm.setTensor('Wcov', Wcov)
+        if Wmean is not None:
+            self._ntm.setTensor('Wmean', Wmean)
+        if Wcov is not None:        
+            self._ntm.setTensor('Wcov', Wcov)
         
         #temporary/scratch tensors:
         self._ntm.registerTensor('Wsample', (('r','gtilde','stilde','dtilde'),()) )
@@ -447,7 +388,7 @@ meansMatrix
         return self._ntm.tensorData['Wsample']
 
 
-    def getDistribution(self, phase=0.5, phaseVelocity=1.0, currentDistribution=None, phaseVelocitySigma=None, phaseAcceleration=0.0, ):
+    def getDistribution(self, generalized_phase, currentDistribution=None ):
         """
         return the distribution of the (possibly multidimensional) state at the given phase
            for now, it returns the parameters (means, derivatives) of a univariate gaussian
@@ -459,32 +400,20 @@ meansMatrix
             currentDistribution: not used by ProMP
             currentMassMatrixInverse: not used by ProMP
             
-            phaseVelocitySigma: expected variation of the phase velocity. 
-                    If set to None or 0, phase velocity is assumed to be perfectly known (original ProMP behavior)
-                    Else, its influence is approximated by computing the covariances from two phase velocities 2*phaseVelocitySigma apart
-                    The latter avoids (computationally problematic and practically unnecessary) zero variances in velocity (and torque) when phase velocities approach zero
-
            means: (derivatives x dofs) array
            covariances: (derivatives x dofs x dofs x derivatives) array
 
         """
-        for i, val in zip(range(self._ntm.indexSizes['phase']), (phase, phaseVelocity, phaseAcceleration)):        
-            self._ntm.tensorData['phase'][i] = val
+        self._ntm.setTensor('phase', generalized_phase)
         
         #call the code that computes the interpolating map PHI:
-        self._ntm.tensorData['PHI'] =  self.phi_computer.getPhi(self._ntm.tensorData['phase'])
+        self._ntm.tensorData['PHI'] =  self.phi_computer.getPhi(self._ntm.tensorData['phase'][0])
         
         #call the code that computes the linear(-ized) task-space map T:
-        self.T_computer.setT()
-        _np.copyto( self._ntm.tensorData['Xref'], self.T_computer.getXref() )
-        self._ntm.tensorData['T'] =  self.T_computer.getT()
+        self.T_computer.update()
         
         #call the code that computes the phase-to-time derivatives map P:
-        generalized_phase = _np.zeros(self._ntm.indexSizes['gphi'])
-        generalized_phase[0] = phase
-        generalized_phase[1] = phaseVelocity
-        generalized_phase[2] = phaseAcceleration
-        self._ntm.tensorData['P'] = self.getP(self._ntm.indexSizes['gphi'], generalized_phase)
+        self._ntm.tensorData['P'] = self.getP(self._ntm.indexSizes['g'], _np.asarray(generalized_phase))
         
         #Now to the computation of the actual ProMeP equation:
         self._ntm.update('P:PHI', 'T:P:PHI', 'PSI', 'T:Xref', 'O', 'PSI:Wmean','Ymean', 'PSI:Wcov', 'Ycov')
@@ -705,7 +634,7 @@ meansMatrix
                     dcdt = 1.0
 
                 for m, rowname in enumerate(plotrownames2indexvalues):
-                    if rowname = 'torque' and tauvalues is None :
+                    if rowname == 'torque' and tauvalues == None :
                         continue
                     r_idx, g_idx = plotrownames2indexvalues[rowname]
                     x,y = data[rowname]
@@ -763,13 +692,13 @@ meansMatrix
             sigmamax[1] = _np.max(sigmas[1,:,:,:])
             cov = cov * sigmamax[:,None,None,None, None,None,None,None] * sigmamax[None,None,None,None, :,None,None,None]
 
-        cov_reordered = _np.transpose(cov, (1,0,2,3 5,4,6,7))
+        cov_reordered = _np.transpose(cov, (1,0,2,3, 5,4,6,7))
         image =_np.reshape(cov_reordered, self.tensorShapeFlattened['Wcov'])
         gridvectorX = _np.arange(0, image.shape[0], 1)
         gridvectorY = _np.arange(image.shape[1], 0, -1)
 
         fig = _plt.figure(figsize=(3.4,3.4))
-        _plt.pcolor(gridvectorX, gridvectorY,, cmap=_cmapCorrelations, vmin=-1, vmax=1)
+        _plt.pcolor(gridvectorX, gridvectorY, cmap=_cmapCorrelations, vmin=-1, vmax=1)
         
         _plt.axis([0, image.shape[0], 0, image.shape[1]])
         _plt.gca().set_aspect('equal', 'box')
