@@ -1,0 +1,11 @@
+
+promp/__pycache__/
+
+*.pyc
+
+build/
+
+
+*.mp4
+
+*.pdf
