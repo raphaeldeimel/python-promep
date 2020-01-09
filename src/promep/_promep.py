@@ -113,14 +113,19 @@ class MechanicalStateDistribution(object):
         self.means = _np.array(means)
         self.covariances = _np.array(covariances)
         self.shape = means.shape
-        self.indexNames = ['r','g','d']
-        self.indexNames_transposed = ['r_','g_','d_']
+        self.indexNames = ['r','d','g']
+        self.indexNames_transposed = ['r_','d_','g_']
         
         #create a view on the variances within the covariance tensor:
         self.variancesView = _np.einsum('ijkijk->ijk', self.covariances)
     
-
-
+    def __repr__(self):
+        text  = "Realms: {}\n".format(self.shape[0])
+        text += "Dofs: {}\n".format(self.shape[1])
+        text += "Derivatives: {}\n".format(self.shape[2])
+        for g_idx in range(self.shape[2]):            
+            text += "\nDerivative {}:\n       Means:\n{}\n       Variances:\n{}\n".format(g_idx, self.means[:,:,g_idx], self.variancesView[:,:,g_idx])
+        return text
 
 class JointSpaceToJointSpaceTransform(object):
     """
@@ -384,43 +389,73 @@ class ProMeP(object):
 meansMatrix
         returns a (supports x dofs_w) matrix of actual values for each support and each dof
         """
-        self._ntm.tensorDataAsFlattened['Wsample'] = _np.random.multivariate_normal(self._ntm.tensorDataAsFlattened['Wmean'], self._ntm.tensorDataAsFlattened['Wcov'])
+        self._ntm.tensorDataAsFlattened['Wsample'][:,0] = _np.random.multivariate_normal(self._ntm.tensorDataAsFlattened['Wmean'][:,0], self._ntm.tensorDataAsFlattened['Wcov'])
         return self._ntm.tensorData['Wsample']
 
 
-    def getDistribution(self, generalized_phase, currentDistribution=None ):
+    def getDistribution(self, generalized_phase=None, currentDistribution=None):
         """
         return the distribution of the (possibly multidimensional) state at the given phase
            for now, it returns the parameters (means, derivatives) of a univariate gaussian
 
-            phase: at which phase the distribution should be computed
-            phaseVelocity: how fast does the phase progress in time? (d phi / dt) 
-                        It is needed in case you want your distribution's derivatives to be scaled correctly 
+            generalized_phase: at which phase and its derivatives the distribution should be computed
                         
             currentDistribution: not used by ProMP
-            currentMassMatrixInverse: not used by ProMP
-            
-           means: (derivatives x dofs) array
-           covariances: (derivatives x dofs x dofs x derivatives) array
+
+            returns a MechanicalStateDistribution object          
 
         """
         self._ntm.setTensor('phase', generalized_phase)
         
+        self._updateP()
+        
         #call the code that computes the interpolating map PHI:
-        self._ntm.tensorData['PHI'] =  self.phi_computer.getPhi(self._ntm.tensorData['phase'][0])
+        self._ntm.setTensor('PHI', self.phi_computer.getPhi(self._ntm.tensorData['phase'][0]))
         
         #call the code that computes the linear(-ized) task-space map T:
         self.T_computer.update()
-        
-        #call the code that computes the phase-to-time derivatives map P:
-        self._ntm.tensorData['P'] = self.getP(self._ntm.indexSizes['g'], _np.asarray(generalized_phase))
-        
+                
         #Now to the computation of the actual ProMeP equation:
-        self._ntm.update('P:PHI', 'T:P:PHI', 'PSI', 'T:Xref', 'O', 'PSI:Wmean','Ymean', 'PSI:Wcov', 'Ycov')
+        self._ntm.update('P:PHI', 'PSI', 'T:Xref', 'O', 'PSI:Wmean','Ymean', 'PSI:Wcov', 'Ycov')
 
-        return MultivariateNormalDistribution(self._ntm.tensorData['Ymean'], self._ntm.tensorData['Ycov'])
+        return MechanicalStateDistribution(self._ntm.tensorData['Ymean'], self._ntm.tensorData['Ycov'])
 
+    def _updateP(self):
+        """
+        update the tensor mapping from phase-derivatives to time-derivatives
+        Basically, it implements Faa di Bruno's algorithm
+        """
+        P = self._ntm.tensorData['P']
+        phase = self._ntm.tensorData['phase']
+        
+        if self._ntm.indexSizes['gtilde'] > 4 or self._ntm.indexSizes['g'] > 4:
+            raise NotImplementedError()
+        
+        #compute the scaling factors according to Faa di Brunos formula:
+        faadibruno = _np.zeros(((4,4)))
+        faadibruno[0,0] = 1.0
+        if self._ntm.indexSizes['g'] > 1:
+            faadibruno[1,1] = phase[1]
+            faadibruno[2,2] = phase[1]**2
+            faadibruno[3,3] = phase[1]**3
+        if self._ntm.indexSizes['g'] > 2:
+            faadibruno[2,1] = phase[2]
+            faadibruno[3,2] = 3*phase[1]*phase[2]
+        if self._ntm.indexSizes['g'] > 3:
+            faadibruno[3,1] = phase[3]
+        
+        #copy them into P, but shifted for/by gtilde
+        P = self._ntm.tensorData['P']
+        for i in range(self._ntm.indexSizes['gtilde']):
+            j = self._ntm.indexSizes['g'] - i
+            if j > 0:
+                P[i:,:,i] = faadibruno[:j,:self._ntm.indexSizes['gphi']]
 
+        
+        
+        
+        
+        
 
     def sampleTrajectory(self, generalized_phases, W=None):
         """

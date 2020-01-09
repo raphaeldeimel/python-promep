@@ -63,7 +63,7 @@ class InterpolationGaussian(object):
         #adjust scale once so the inteprolation vector is close to 1.0
         # This is different to [1], where the interpolation vector is always normalized
         # exact unit scale is not necessary though, and without normalizing we maintain a bell curve everywhere
-        scale =  _np.sum(self.getPhi(0.5)[0,:])
+        scale =  _np.sum(self.getPhi(0.5)[:,0])
         self._b = (1.0 + self._clipAmount)  / scale #scale, but also adjust for the clipping offset
         self._clipAmount = self._clipAmount / scale #adjust clipping offset to the scale
 
@@ -72,20 +72,22 @@ class InterpolationGaussian(object):
         """
         evaluate the basis function at the given phase
         """
-        self.phase = phase
         #compute values of the basis functions:
+        phase = _np.clip(phase, 0.0, 1.0)
         distances = phase - self._phasesOfSupportsAndRepeated
 
         Bases0thDerivativeAllUnclipped = self._b * _np.exp(self._a * (distances**2))
         Bases0thDerivativeAll = _np.clip(Bases0thDerivativeAllUnclipped-self._clipAmount, 0.0, _np.inf)
         
         #iterate through all requested derivatives and fill  self.interpolationMatrix:
+        print(distances)
+        print(Bases0thDerivativeAllUnclipped)
         nthDerivative = Bases0thDerivativeAll
         for gphi in range(self.size_gphi):
             #aggregate the repeated supports beyond the interval into the first and last one:
-            out_array[gphi, :] = nthDerivative[self._repeatExtremalSupports:-self._repeatExtremalSupports]
-            out_array[gphi, 0]  += _np.sum(nthDerivative[:self._repeatExtremalSupports])
-            out_array[gphi, -1] += _np.sum(nthDerivative[-1-self._repeatExtremalSupports:])
+            out_array[:,gphi] = nthDerivative[self._repeatExtremalSupports:-self._repeatExtremalSupports]
+            out_array[0, gphi]  += _np.sum(nthDerivative[:self._repeatExtremalSupports])
+            out_array[-1, gphi] += _np.sum(nthDerivative[-self._repeatExtremalSupports:])
             nthDerivative = distances * self._c *  nthDerivative        
         return # data written to out_array 
 
@@ -100,7 +102,7 @@ class InterpolationGaussian(object):
                     names, mappings available as self.mStateNames and self.mStateNames2Index
         """
         if out_array == None:
-            out_array = _np.zeros((self.size_gphi, self.size_stilde))
+            out_array = _np.zeros((self.size_stilde, self.size_gphi))
         self._evaluateBasisFunctions(phase, out_array)
         return out_array
 

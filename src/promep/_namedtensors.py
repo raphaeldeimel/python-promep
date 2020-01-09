@@ -362,42 +362,59 @@ class NamedTensorsManager(object):
         if args == (): #if no names are given, iterate through all registered operations to update all tensors
             args = self.update_order
 
-        print(self.tensorIndices)
         for result_name in args:
-            print(result_name)
-            #recompute a single oepration:           
-            if result_name in self.registeredContractions:
-                A,B,summing_pairs, reorder_upper_lower_indices = self.registeredContractions[result_name]
-                td  = _np.tensordot(self.tensorData[A], self.tensorData[B], axes=summing_pairs)
-                _np.copyto(self.tensorData[result_name], _np.transpose(td, reorder_upper_lower_indices))
+            #recompute a single oepration:
+            try:     
+                A = ""
+                B = ""  
+                operation = ""
+                B_permuter = ""  
+                if result_name in self.registeredContractions:
+                    operation = "contract"
+                    A,B,summing_pairs, reorder_upper_lower_indices = self.registeredContractions[result_name]
+                    B_permuter = summing_pairs
+                    td  = _np.tensordot(self.tensorData[A], self.tensorData[B], axes=summing_pairs)
+                    _np.copyto(self.tensorData[result_name], _np.transpose(td, reorder_upper_lower_indices))
+                    
+                elif result_name in self.registeredInverses: 
+                    operation = "invert"
+                    A, regularizer = self.registeredInverses[result_name]
+                    inverted = _np.linalg.pinv( self.tensorDataAsFlattened[A], rcond = regularizer) 
+                    inverted.shape = self.tensorShape[result_name]
+                    _np.copyto(  self.tensorData[result_name], inverted) #unfortunately, we cannot specify an out array for the inverse
+                    
+                elif result_name in self.registeredTransposes:                
+                    operation = "transpose"
+                    pass #nothing to do, we're using views for copy-free transpose
                 
-            elif result_name in self.registeredInverses: 
-                M, regularizer = self.registeredInverses[result_name]
-                inverted = _np.linalg.pinv( self.tensorDataAsFlattened[M], rcond = regularizer) 
-                inverted.shape = self.tensorShape[result_name]
-                _np.copyto(  self.tensorData[result_name], inverted) #unfortunately, we cannot specify an out array for the inverse
+                elif result_name in self.registeredAdditions:             
+                    operation = "add"
+                    A,B, B_permuter = self.registeredAdditions[result_name]
+                    if B_permuter != None:
+                        Bdata = _np.transpose(self.tensorData[B], axes=B_permuter) #precompute would be better, but so we avoid stale references
+                    else:
+                        Bdata = self.tensorData[B]
+                    _np.add(self.tensorData[A], Bdata, out= self.tensorData[result_name])
                 
-            elif result_name in self.registeredTransposes:                
-                pass #nothing to do, we're using views for copy-free transpose
-            
-            elif result_name in self.registeredAdditions:             
-                A,B, B_permuter = self.registeredAdditions[result_name]
-                if B_permuter != None:
-                    Bdata = _np.transpose(self.tensorData[B], axes=B_permuter) #precompute would be better, but so we avoid stale references
+                elif result_name in self.registeredSubtractions:                
+                    operation = "subtract"
+                    A,B, B_permuter = self.registeredSubtractions[result_name]
+                    if B_permuter != None:
+                        Bdata = _np.transpose(self.tensorData[B], axes=B_permuter) #precompute would be better, but so we avoid stale references
+                    else:
+                        Bdata = self.tensorData[B]
+                    _np.subtract(self.tensorData[A], Bdata, out= self.tensorData[result_name])
                 else:
-                    Bdata = self.tensorData[B]
-                _np.add(self.tensorData[A], Bdata, out= self.tensorData[result_name])
-            
-            elif result_name in self.registeredSubtractions:                
-                A,B, B_permuter = self.registeredSubtractions[result_name]
-                if B_permuter != None:
-                    Bdata = _np.transpose(self.tensorData[B], axes=B_permuter) #precompute would be better, but so we avoid stale references
-                else:
-                    Bdata = self.tensorData[B]
-                _np.subtract(self.tensorData[A], Bdata, out= self.tensorData[result_name])
-            else:
-                raise Warning("tensor {} seems not to be computed by a registered operation".format(result_name))
-            
+                    operation = "unknown"
+                    raise Warning("tensor {} seems not to be computed by a registered operation".format(result_name))
+            except Exception as e:
+                print("Exception when computing {}={}({} , {})".format(result_name,operation,A,B))
+                print("Details for {}: {}   {}".format(A, self.tensorIndices[A], self.tensorData[A].shape))
+                print("Details for {}: {}   {}  {}".format(B, self.tensorIndices[B], self.tensorData[B].shape, B_permuter))
+                print("Details for {}: {}   {}".format(result_name, self.tensorIndices[result_name], self.tensorShape[result_name]))
+                
+                raise e
+                            
 
         
 
