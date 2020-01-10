@@ -1,5 +1,6 @@
-__all__ = ['_promep', '_namedtensors.py']
+__all__ = []
 from ._promep import *
 from ._namedtensors import *
+from ._interpolationkernels import *
 
 

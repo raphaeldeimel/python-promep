@@ -20,7 +20,9 @@ import os as _os
 import matplotlib.pyplot as _plt
 import matplotlib as _mpl
 
-from . import _namedtensors, _interpolationkernels
+from promep import *
+
+from . import _namedtensors, _interpolationkernels, _mechanicalstate, _taskspaces
 
 from  scipy.special import betainc as _betainc
 from sklearn import covariance as _sklearncovariance
@@ -107,66 +109,6 @@ _cmapCorrelations = _mpl.colors.LinearSegmentedColormap('Correlations', {
 )
 
 
-class MechanicalStateDistribution(object):
-
-    def __init__(self, means, covariances):
-        self.means = _np.array(means)
-        self.covariances = _np.array(covariances)
-        self.shape = means.shape
-        self.indexNames = ['r','d','g']
-        self.indexNames_transposed = ['r_','d_','g_']
-        
-        #create a view on the variances within the covariance tensor:
-        self.variancesView = _np.einsum('ijkijk->ijk', self.covariances)
-    
-    def __repr__(self):
-        text  = "Realms: {}\n".format(self.shape[0])
-        text += "Dofs: {}\n".format(self.shape[1])
-        text += "Derivatives: {}\n".format(self.shape[2])
-        for g_idx in range(self.shape[2]):            
-            text += "\nDerivative {}:\n       Means:\n{}\n       Variances:\n{}\n".format(g_idx, self.means[:,:,g_idx], self.variancesView[:,:,g_idx])
-        return text
-
-class JointSpaceToJointSpaceTransform(object):
-    """
-    
-    """
-    
-    def __init__(self, ntm):
-        self._ntm = _namedtensors.NamedTensorsManager(ntm)
-        #Path to compute T:
-        self._ntm.registerTensor('Xref', (('rtilde','g', 'dtilde',),()) )        
-        self._ntm.registerTensor('Yref', (('r','g', 'd',),()) )        
-        self._ntm.registerTensor('Jt', (('d',),('dtilde',)))
-        self._ntm.registerTensor('Jinv', (('d',),('dtilde',)))
-        self._ntm.registerBasisTensor('e_effort_effort', (('r',),('rtilde',)), (('effort',), ('effort',)) )
-        self._ntm.registerBasisTensor('e_motion_motion', (('r',),('rtilde',)), (('motion',), ('motion',)) )
-        self._ntm.registerContraction('e_effort_effort', 'Jt')
-        self._ntm.registerContraction('e_motion_motion', 'Jinv')
-        self._ntm.registerAddition('e_effort_effort:Jt', 'e_motion_motion:Jinv', result_name='T') #has indices (('r', 'd')('rtilde', 'dtilde'))
-        self._Jt  = _np.eye(self._ntm.indexSizes['d'])  #trivial Jacobian between joint space and joint space 
-
-        #conceptually; to also consider dotJ:
-        #self._ntm.registerTensor('dotJinv', (('d',),('dtilde',)))
-        #self._ntm.registerBasisTenso('e_motion_1_motion_0', (('r',),('rtilde',)), (('motion',), ('motion',)) )
-        #self._ntm.registerContraction('e_motion_1_motion_0', 'dotJinv')        
-        #self._ntm.registerAddition('e_effort_effort:Jt+e_motion_motion:Jinv', 'e_motion_1_motion_0:dotJinv', result_name='T') #has indices (('r', 'd')('rtilde', 'dtilde'))
-        self.update()
-        
-    def update(self):
-        self._ntm.update()
-
-    def get_T_view(self):
-        return self._ntm.tensorData['T']
-    
-    def get_Xref_view(self):
-        return self._ntm.tensorData['Xref']
-
-    def get_Yref_view(self):
-        return self._ntm.tensorData['Yref']
-
-
-
 class ProMeP(object):
     """
     This class implements the Probabilistic Mechanical Primitives as described in the paper:
@@ -177,30 +119,52 @@ class ProMeP(object):
 
 
 
-    def __init__(self, index_sizes=None, Wmean=None, Wcov=None, name="unnamed", expected_duration=1.0):
+    def __init__(self, 
+                 index_sizes={}, 
+                 Wmean=None, 
+                 Wcov=None, 
+                 name="unnamed", 
+                 expected_duration=1.0, 
+                 PHI_computer_cls=_interpolationkernels.InterpolationGaussian,   #class to compute the PHI tensor with 
+                 T_computer_cls=_taskspaces.JointSpaceToJointSpaceTransform,                 #class to compute the T tensor with
+        ):
         """
             index_sizes: dictionary containing the sizes of all internal indices:
                 indices:
                     'r': number of realms (usually 2) 
+                    'rtilde': number of realms in parameter space (the same as 'r')                     
+                    'g': number of time derivatives to provide (usually 2, zeroth and first derivative)
+                    'gtilde': number of phase derivatives to represent in parameter space (usually equal or less than gphi)
+                    'gphi': number of derivatives of the phase variable to consider when mapping to time-based trajectories (usually equal to g)
+                    'stilde': number of discrete parameters used for interpolating each trajectory
                     'd': number of DoFs being controlled (usually joint space dof)
-                    'g': number of time derivatives to consider (usually 2, zeroth and first derivative)
-                    'gphi': number of phase derivatives to consider when mapping to time-based trajectories (usually equal to  g)
-                    'gtilde': number of phase derivatives to consider in parameter space 
-                    'stilde': number of parameters used for interpolation
-                    'dtilde': DOFs in parameter space
-                    'r': number of realms in parameter space (usually the same as 'rtilde')                     
-                    
-            Default:
+                    'dtilde': DOFs in parameter space (usually the same as d)
+            
+            For convenience, you can also specify the following meta-parameters instead of individual index sizes:
+                'dofs'        (sets 'd' and 'dtilde' )
+                'realms'      (sets 'r' and 'rtilde' )
+                'derivatives' (sets 'g', 'gphi' and 'gtilde' )
+                'interpolation_parameters' (sets 'stilde' ) 
+            
+
+            Alternatively, you can also specify every index size directly, if needed:
+
+            The default values are:
             index_sizes = {
                 'r':  2,  
-                'd':  8,
-                'g':  2,
-                'gphi':  2,
-                'gtilde':  2,
-                'stilde':  7,
-                'dtilde':  8,
                 'rtilde':  2,  
+                'g':  3,
+                'gtilde': 3,
+                'gphi':  3,
+                'stilde':  5,
+                'd':  4,
+                'dtilde':  4,
             }
+            
+           
+            The following size relationships are not wrong, but useless as they don't change anything and only slow down computation:
+                gphi > g 
+                gtilde > g                
         
             meansMatrix: matrix of means of each DOF at each support point ( (supportsEffort+supportsMotion) x dofs)
             
@@ -221,80 +185,104 @@ class ProMeP(object):
                         
         """
         self.name = name
-        self._ntm = _namedtensors.NamedTensorsManager() #band-aid to have proper multilinear algebra semantics for numpy etc.
+        self.tns = _namedtensors.TensorNameSpace() #band-aid to have proper multilinear algebra semantics for numpy etc.
 
         #register all index names being used and all index sizes:
-        if index_sizes == None:
-            index_sizes = {
-                'r':  2,
-                'd':  8,
-                'g':  2,
-                'gphi':  2,
-                'gtilde':  2,
-                'stilde':  7,
-                'dtilde':  8,
-                'rtilde':  2,
-            }
-        self.index_sizes = index_sizes
-        for name in index_sizes:
-            if name == 'r' or 'rtilde':
-                  self._ntm.registerIndex(name, index_sizes[name], values=['motion', 'effort'])
+        self.index_sizes = {
+            'r':  2,
+            'rtilde':  2,
+            'g':  3,
+            'gtilde':  3,
+            'gphi':  3,
+            'd':  4,
+            'dtilde':  4,
+            'stilde':  5,
+        }
+        
+        #for convenience: accept standard meta-parameters with sensible names:
+        index_sizes = dict(index_sizes) 
+        if 'dofs' in index_sizes:
+            self.index_sizes['d']      = index_sizes['dofs']
+            self.index_sizes['dtilde'] = index_sizes['dofs']
+            del index_sizes['dofs']
+        if 'interpolation_parameters' in index_sizes:
+            self.index_sizes['stilde'] = index_sizes['interpolation_parameters']
+            del index_sizes['interpolation_parameters']
+        if 'realms' in index_sizes:
+            self.index_sizes['r']      = index_sizes['realms']
+            self.index_sizes['rtilde'] = index_sizes['realms']
+            del index_sizes['realms']       
+        if 'derivatives' in index_sizes:
+            self.index_sizes['g']      = index_sizes['derivatives']
+            self.index_sizes['gtilde'] = index_sizes['derivatives']
+            self.index_sizes['gphi']   = index_sizes['derivatives']
+            del index_sizes['derivatives']       
+        self.index_sizes.update(index_sizes) #add/overwrite any remaining indices that have been specified explicitly
+        
+        for name in self.index_sizes:
+            if name == 'r' or name == 'rtilde':
+                  self.tns.registerIndex(name, self.index_sizes[name], values=['motion', 'effort'][:self.index_sizes[name]])
             else:
-                  self._ntm.registerIndex(name, index_sizes[name])
+                  self.tns.registerIndex(name, self.index_sizes[name], values = list(range(self.index_sizes[name])))
                   
-        #hooks to compute tensors PHI and T:
-        self.phi_computer =  _interpolationkernels.InterpolationGaussian(self._ntm.indexSizes['gphi'], self._ntm.indexSizes['stilde'])  #should provide a getPhi method
-        self.T_computer = JointSpaceToJointSpaceTransform(self._ntm) #should implement a get_T_view(), get_Xref_view() and get_Yref_view() method
-        
-        
+        #set up hooks to compute tensors PHI and T:
+        self.PHI_computer = PHI_computer_cls(self.tns)   
+        self.T_computer = T_computer_cls(self.tns) #should implement a get_T_view(), get_Xref_view() and get_Yref_view() method
+            
         #register all tensors not being computed by operators:
         #i.e. input tensors:
-        self._ntm.registerTensor('Wmean', (('rtilde','gtilde','stilde','dtilde'),()) )
-        self._ntm.registerTensor('Wcov', (( 'rtilde','gtilde','stilde','dtilde'),( 'rtilde_','gtilde_','stilde_','dtilde_')) )
-        self._ntm.registerTensor('PHI', (('gphi',),('stilde',)) )
-        self._ntm.registerTensor('P', (('g',),('gphi','gtilde')) )
-        self._ntm.registerTensor('Xref', (('rtilde','g', 'dtilde',),()), external_array = self.T_computer.get_Xref_view() )        
-        self._ntm.registerTensor('Yref', (('r','g', 'd',),()) , external_array = self.T_computer.get_Yref_view())
-        self._ntm.registerTensor('T', (('r','d'),('rtilde', 'dtilde')), external_array = self.T_computer.get_T_view())
+        self.tns.registerTensor('phase', (('gphi',),()) )  #generalized phase vector        
+        self.tns.registerTensor('Wmean', (('rtilde','gtilde','stilde','dtilde'),()) )
+        self.tns.registerTensor('Wcov', (( 'rtilde','gtilde','stilde','dtilde'),( 'rtilde_','gtilde_','stilde_','dtilde_')) )
+        self.tns.registerTensor('PHI', (('gphi',),('stilde',)), external_array = self.PHI_computer.get_PHI_view() )
+        self.tns.registerTensor('P', (('g',),('gphi','gtilde')) )
+        self.tns.registerTensor('Xref', (('rtilde','g', 'dtilde',),()), external_array = self.T_computer.get_Xref_view() )  #link to T_computer's T tensor      
+        self.tns.registerTensor('Yref', (('r','g', 'd',),()) , external_array = self.T_computer.get_Yref_view())            #link to T_computer's Yref tensor
+        self.tns.registerTensor('T', (('r','d'),('rtilde', 'dtilde')), external_array = self.T_computer.get_T_view())       #link to T_computer's Xref tensor
         #register all operations being used on tensors:
         
         #path to compute PSI:
-        self._ntm.registerContraction('P', 'PHI')
-        self._ntm.registerContraction('T', 'P:PHI', result_name='PSI')
-        self._ntm.registerTranspose('PSI')
+        self.tns.registerContraction('P', 'PHI')
+        self.tns.registerContraction('T', 'P:PHI', result_name='PSI')
+        self.tns.registerTranspose('PSI')
         
         #compute any offsets required by the linearization of the task space map into T
-        self._ntm.registerContraction('T', 'Xref')
-        self._ntm.registerSubtraction('Yref', 'T:Xref', result_name='O')
+        self.tns.registerContraction('T', 'Xref')
+        self.tns.registerSubtraction('Yref', 'T:Xref', result_name='O')
         
         #project the mean of weights to mean of trajectory:
-        self._ntm.registerContraction('PSI', 'Wmean')
-        for key in self._ntm.tensorIndices:
-            print(f"{key}      {self._ntm.tensorIndices[key]}")
-        self._ntm.registerAddition('PSI:Wmean', 'O', result_name='Ymean')
+        self.tns.registerContraction('PSI', 'Wmean')
+        
+        self.tns.registerAddition('PSI:Wmean', 'O', result_name='Ymean')
         
         #project the covariances of weights to covariances of trajectory:
-        self._ntm.registerContraction('PSI', 'Wcov')
-        self._ntm.registerContraction('PSI:Wcov', '(PSI)^t', result_name='Ycov')
+        self.tns.registerContraction('PSI', 'Wcov')
+        self.tns.registerContraction('PSI:Wcov', '(PSI)^t', result_name='Ycov')
 
-
-        
-        
+       
         self.phaseAssociable = True #indicate that this motion generator is parameterized by phase
         self.timeAssociable = False #indicate that this motion generator is not parameterizable by time
         self.tolerance=1e-7
         
         self.expectedDuration = expected_duration
-        if Wmean is not None:
-            self._ntm.setTensor('Wmean', Wmean)
-        if Wcov is not None:        
-            self._ntm.setTensor('Wcov', Wcov)
+
+        self.tns.setTensor('Wmean', Wmean)
+        self.tns.setTensor('Wcov', Wcov)
         
         #temporary/scratch tensors:
-        self._ntm.registerTensor('Wsample', (('r','gtilde','stilde','dtilde'),()) )
-        self._ntm.registerTensor('phase', (('g'),()) )  #generalized phase vector
+        self.tns.registerTensor('Wsample', (('r','gtilde','stilde','dtilde'),()) )
         
 
+    def __repr__(self):
+        strings = ["Indices:"]
+        for key in self.tns.indexSizes:
+            strings.append("{}: {}".format(key,self.tns.indexSizes[key]))
+        strings.append("")
+        strings.append("Tensors:")
+        for key in self.tns.tensorIndices:
+            strings.append("{}     {}".format(key,self.tns.tensorIndices[key]))
+        strings.append("")
+        return '\n'.join(strings)
 
     def serialize(self):
         """
@@ -379,9 +367,11 @@ class ProMeP(object):
         d = myDict
         return cls.makeFromDict(d)
     
+
+    def setParameterDistribution(self, Wmean, Wcov):
+        self.tns.setTensor('Wmean', Wmean)
+        self.tns.setTensor('Wcov', Wcov)
     
-
-
 
     def sample(self):
         """
@@ -389,8 +379,9 @@ class ProMeP(object):
 meansMatrix
         returns a (supports x dofs_w) matrix of actual values for each support and each dof
         """
-        self._ntm.tensorDataAsFlattened['Wsample'][:,0] = _np.random.multivariate_normal(self._ntm.tensorDataAsFlattened['Wmean'][:,0], self._ntm.tensorDataAsFlattened['Wcov'])
-        return self._ntm.tensorData['Wsample']
+        self.tns.tensorDataAsFlattened['Wsample'][:,0] = _np.random.multivariate_normal(self.tns.tensorDataAsFlattened['Wmean'][:,0], self.tns.tensorDataAsFlattened['Wcov'])
+        return self.tns.tensorData['Wsample']
+
 
 
     def getDistribution(self, generalized_phase=None, currentDistribution=None):
@@ -405,57 +396,54 @@ meansMatrix
             returns a MechanicalStateDistribution object          
 
         """
-        self._ntm.setTensor('phase', generalized_phase)
-        
-        self._updateP()
-        
-        #call the code that computes the interpolating map PHI:
-        self._ntm.setTensor('PHI', self.phi_computer.getPhi(self._ntm.tensorData['phase'][0]))
-        
-        #call the code that computes the linear(-ized) task-space map T:
-        self.T_computer.update()
-                
-        #Now to the computation of the actual ProMeP equation:
-        self._ntm.update('P:PHI', 'PSI', 'T:Xref', 'O', 'PSI:Wmean','Ymean', 'PSI:Wcov', 'Ycov')
+        self.tns.setTensor('phase', generalized_phase)
+        self._updateP() #call the code that computes map between phase and time derivatives. implemented directly in this class
+        self.PHI_computer.update() #call the hook that computes the interpolating map PHI:
+        self.T_computer.update() #call the hook that computes the linear(-ized) task-space map T:
+        #Now compute the actual ProMeP equation:
+        self.tns.update('P:PHI', 'PSI', 'T:Xref', 'O', 'PSI:Wmean', 'Ymean', 'PSI:Wcov', 'Ycov')
 
-        return MechanicalStateDistribution(self._ntm.tensorData['Ymean'], self._ntm.tensorData['Ycov'])
+        return _mechanicalstate.MechanicalStateDistribution(self.tns.tensorData['Ymean'], self.tns.tensorData['Ycov'])
+
+
 
     def _updateP(self):
         """
+        Hook you can overload to change how P is computed 
+        
         update the tensor mapping from phase-derivatives to time-derivatives
         Basically, it implements Faa di Bruno's algorithm
         """
-        P = self._ntm.tensorData['P']
-        phase = self._ntm.tensorData['phase']
-        
-        if self._ntm.indexSizes['gtilde'] > 4 or self._ntm.indexSizes['g'] > 4:
+        if self.tns.indexSizes['gtilde'] > 4 or self.tns.indexSizes['g'] > 4 or self.tns.indexSizes['gphi'] > 4:
             raise NotImplementedError()
+            
+        P = self.tns.tensorData['P']
+        phase_fdb=_np.zeros((4))
+        phase_fdb[:self.tns.indexSizes['gphi']] = self.tns.tensorData['phase']
         
-        #compute the scaling factors according to Faa di Brunos formula:
+        
+        #compute the scaling factors according to Faa di Brunos formula
+        #0th, 1st and 2nd derivative:
         faadibruno = _np.zeros(((4,4)))
-        faadibruno[0,0] = 1.0
-        if self._ntm.indexSizes['g'] > 1:
-            faadibruno[1,1] = phase[1]
-            faadibruno[2,2] = phase[1]**2
-            faadibruno[3,3] = phase[1]**3
-        if self._ntm.indexSizes['g'] > 2:
-            faadibruno[2,1] = phase[2]
-            faadibruno[3,2] = 3*phase[1]*phase[2]
-        if self._ntm.indexSizes['g'] > 3:
-            faadibruno[3,1] = phase[3]
+        faadibruno[0,0] = 1.0        
+        faadibruno[1,1] = phase_fdb[1]
+        faadibruno[2,2] = phase_fdb[1]**2
+        faadibruno[2,1] = phase_fdb[2]
+
+        if self.tns.indexSizes['g'] > 3:  #is probably not used
+            faadibruno[3,3] = phase_fdb[1]**3
+            faadibruno[3,2] = 3*phase_fdb[1]*phase_fdb[2]
+            faadibruno[3,1] = phase_fdb[3]
         
         #copy them into P, but shifted for/by gtilde
-        P = self._ntm.tensorData['P']
-        for i in range(self._ntm.indexSizes['gtilde']):
-            j = self._ntm.indexSizes['g'] - i
-            if j > 0:
-                P[i:,:,i] = faadibruno[:j,:self._ntm.indexSizes['gphi']]
+        P = self.tns.tensorData['P']  
+        for gtilde in range(self.tns.indexSizes['gtilde']):
+            g_start = gtilde
+            fdb_g_end = self.tns.indexSizes['g'] - g_start
+            if fdb_g_end > 0:
+                #index order: g, gphi, gtilde
+                P[g_start:,:,gtilde] = faadibruno[:fdb_g_end,:self.tns.indexSizes['gphi']]
 
-        
-        
-        
-        
-        
 
     def sampleTrajectory(self, generalized_phases, W=None):
         """
@@ -470,35 +458,31 @@ meansMatrix
         """
         generalized_phases  = _np.asarray(generalized_phases)
         num = generalized_phases.shape[0]
-        if generalized_phases.shape[1] != self.indexSizes['gphi']:
+        if generalized_phases.shape[1] != self.tns.indexSizes['gphi']:
             raise ValueError()
 
         if W is None:
             W = self.sample()
             
         #compute the trajectory:    
-        Wmean_saved = _np.array(self._ntm.tensorData['Wmean'], copy=True)
-        self._ntm.setTensor('Wmean', W)
-        points = _np.zeros( (num, self._ntm.indexSizes['r'],self._ntm.indexSizes['g'],self._ntm.indexSizes['d']))        
+        Wmean_saved = _np.array(self.tns.tensorData['Wmean'], copy=True)
+        self.tns.setTensor('Wmean', W)
+        points_list = []   
         for i in range(num):
-            self._ntm.setTensor('PHI', self.phi_computer.getPhi(generalized_phases[i,0]))
-            self._ntm.setTensor('P'  , self.getP(self._ntm.indexSizes['gphi'], generalized_phases[i,:]))
-            self._ntm.update()
-            points[i,:,:,:] = self._ntm.tensorData['Ymean']
-        self._ntm.setTensor('Wmean', Wmean_saved) #restore abused Wmean
-
-        return points
+            points_list.append(self.getDistribution(generalized_phases[i]).means)
+        self.tns.setTensor('Wmean', Wmean_saved) #restore abused Wmean
+        return _np.array(points_list)
 
 
 
     def plot(self, dofs='all',
+                   whatToPlot=['position', 'velocity', 'gains', 'torque'],
                    num=100,
                    linewidth=0.5,
-                   withSampledTrajectories=100,
+                   addExampleTrajectories=10,
                    withConfidenceInterval=True,
-                   withGainsPlots=True,
-                   plotRanges = { 'torque': [-1,1], 'position': [0.0,1.0], 'velocity': [-1.0,1.0], 'gains': [-10,100.0],},
-                   sampledTrajectoryStyleCycler=_plt.cycler('color', ['#6666FF']),
+                   plotRanges = { 'torque': [-20,20], 'position': [-1.5,1.5], 'velocity': [-2.0,2.0], 'gains': [-10,100.0],},
+                   exampleTrajectoryStyleCycler=_plt.cycler('color', ['#6666FF']),
                    scaleToExpectedDuration=True,
                    ):
         """
@@ -520,174 +504,180 @@ meansMatrix
         kvColor = '#008800'
         kpCrossColor = '#DD8888'
         kvCrossColor = '#88FF88'
-        c = _np.linspace(0.0, 1.0, num)
-        if scaleToExpectedDuration:
-            dcdts = _np.full_like(c, 1.0/self.expectedDuration)
-        else:
-            dcdts = _np.full_like(c, 1.0)
+
+        phases = _np.zeros((num, self.tns.indexSizes['gphi']))
+        phases[:,0] = _np.linspace(0.0, 1.0, num)
+        if self.tns.indexSizes['gphi'] > 1:
+            if scaleToExpectedDuration:
+                phases[:,1] = 1.0/self.expectedDuration
+            else:
+                phases[:,1] = 1.0
 
         if scaleToExpectedDuration:
             units={
+                'impulse rate': '[Nms]',
                 'torque': '[Nm]',
                 'position': '[rad]',
                 'velocity': '[rad/s]',
+                'acceleration': '[rad/s^2]',
                 'gains': '[Nm/rad], [Nm/rad/s]',
             }
         else:
             units={
-                'torque': '[Nm]',
                 'impulse rate': '[Nms/1]',
+                'torque': '[Nm]',
                 'position': '[rad]',
                 'velocity': '[rad/1]',
-                'gains': '[Nm/rad/1]',
+                'acceleration': '[rad/1^2]',
+                'gains': '[Nm/rad], [Nm/rad/1]',
             }
 
-#        iMotion = self._ntm.indexValues['r'].index('motion')
-#        iEffort = self._ntm.indexValues['r'].index('effort')
+        iMotion = self.tns.indexValues['r'].index('motion')
+        iEffort = self.tns.indexValues['r'].index('effort')
 
-        if dofs=='all':
-            dofs=self._ntm.indexValues['d']
-
+        if dofs=='all' or dofs == None:
+            if self.tns.indexValues['d'] != None:
+                dofs_to_plot=self.tns.indexValues['d']
+            else:
+                dofs_to_plot=list(range(self.tns.indexSizes['d']))
+        else:
+            dofs_to_plot = dofs
         subplotfigsize=2.0
-        plotrownames2indexvalues= OrderedDict({
+        plotrownames2indexvalues={
+            'impulse': [1,1],
             'torque': [1,2],
             'position': [0,0],
             'velocity': [0,1],
+            'acceleration': [0,2],
             'gains': None,
-        })
+        }
 
-        if withGainsPlots:
-            plotrownames2indexvalues['gains'] = None
-        plotrows = len(plotrownames2indexvalues)
+        plotrows = len(whatToPlot)
 
         #make an array with plot limits:
-        limits=_np.ones((plotrows, 2))
-        for i, plotrowname in enumerate(plotrownames2indexvalues):
-            limits[i,0] = plotRanges[plotrowname][0]
-            limits[i,1] = plotRanges[plotrowname][1]
+        limits=_np.zeros((plotrows, 2))
+        limits[:,1]=0.01
+        for row_idx, plotrowname in enumerate(whatToPlot):
+            limits[row_idx,0] = plotRanges[plotrowname][0]
+            limits[row_idx,1] = plotRanges[plotrowname][1]
         
             
-        fig, axesArray = _plt.subplots(plotrows,len(dofs), squeeze=False, figsize=(max(len(dofs), plotrows)*subplotfigsize, plotrows*subplotfigsize), sharex='all', sharey='row')
-            
         #gather the data:
-        data_mean  = _np.empty((num,plotrows, self._ntm.indexSizes['d']))
-        data_sigma = _np.empty((num,plotrows, self._ntm.indexSizes['d']))
-        data_gains = _np.empty((num,self._ntm.indexSizes['d'],2, self._ntm.indexSizes['d']))
-            
-        for i,phase in enumerate(c):
-            phaseVelocity = dcdts[i]
-            dist =  self.getDistribution(phase, phaseVelocity=phaseVelocity)
-            for rowname in plotrownames2indexvalues:
-                indices=plotrownames2indexvalues[rowname]
+        data_mean  = _np.zeros((num,plotrows, self.tns.indexSizes['d']))
+        data_sigma = _np.zeros((num,plotrows, self.tns.indexSizes['d']))
+        data_gains = _np.zeros((num,self.tns.indexSizes['d'],2, self.tns.indexSizes['d']))
+
+        generalized_phase =_np.zeros((self.tns.indexSizes['g']))            
+        for i,phase in enumerate(phases):
+            dist =  self.getDistribution(phase)
+            for row_idx, rowname in enumerate(whatToPlot):
                 if rowname == 'gains':
-                    if withGainsPlots:
-                        data_gains[i,:,:,:]  = _controller.extractPDGains(covariances)
+                    gains  = dist.extractPDGains()
+                    data_gains[i,:,0,:] = gains[:,2,:,0]
+                    data_gains[i,:,1,:] = gains[:,2,:,1]
                 else:                
-                    data_mean[i,:,:] = dist.means[i,j,:]
-                    data_sigma[i,:,:] = _np.sqrt( dist.variancesView[i,j,:] )
+                    r_idx, g_idx = plotrownames2indexvalues[rowname]                
+                    data_mean[i,row_idx,:] = dist.means[r_idx,:,g_idx]
+                    data_sigma[i,row_idx,:] = _np.sqrt( dist.variancesView[r_idx,:,g_idx] )
 
-        #draw the confidence intervals and means/variance indicators for the supports
-        for i, dof in enumerate(dofs):
-            #plot the zero-variance trajectory + 95% confidence interval
-            if withConfidenceInterval:
-                for m in range(data_mean.shape[1]):
-                    meanvalues = data_mean[:,m,dof]
-                    sigmavalues = data_sigma[:,m,dof]
-                    axesArray[m,i].fill_between(c,meanvalues-1.96*sigmavalues, meanvalues+1.96*sigmavalues, label="95%",  color=confidenceColor)
-                    axesArray[m,i].plot(c,meanvalues, label="mean",  color=meansColor)
+        fig, axesArray = _plt.subplots(plotrows,len(dofs_to_plot), squeeze=False, figsize=(max(len(dofs_to_plot), plotrows)*subplotfigsize, plotrows*subplotfigsize), sharex='all', sharey='row')
+            
+        #draw confidence intervals and means/variance indicators for the supports
+        #plot the zero-variance trajectory + 95% confidence interval        
+        for row_idx, row_name in enumerate(whatToPlot):
+            for col_idx, dof in enumerate(dofs_to_plot):
+                if row_name == 'gains': #no confidence intervals possible here
+                    limits[row_idx,0] = min(limits[row_idx,0], _np.min(data_gains))
+                    limits[row_idx,1] = max(limits[row_idx,1], _np.max(data_gains))
+                    axesArray[row_idx,col_idx].axhline(0.0, label=None,  color=(0.4,0.4,0.4), linestyle=':')
+                    for col_idx2, dof2 in enumerate(dofs_to_plot):
+                        if dof != dof2:
+                            axesArray[row_idx,col_idx].plot(phases[:,0],data_gains[:,dof,0,dof2], label=None,  color=kpCrossColor, linestyle=':')
+                            axesArray[row_idx,col_idx].plot(phases[:,0],data_gains[:,dof,1,dof2], label=None,  color=kvCrossColor, linestyle=':')
+                    #plot the joint-local gains prominently, and on top (i.e. last)
+                    axesArray[row_idx,col_idx].plot(phases[:,0],data_gains[:,dof,0,dof], label="gain kp",  color=kpColor)
+                    axesArray[row_idx,col_idx].plot(phases[:,0],data_gains[:,dof,1,dof], label="gain kv",  color=kvColor)
+                else:
+                    meanvalues = data_mean[:,row_idx,dof]
+                    sigmavalues = data_sigma[:,row_idx,dof]
+                    upper_boundary = meanvalues+1.96*sigmavalues
+                    lower_boundary = meanvalues-1.96*sigmavalues
+                    if withConfidenceInterval:
+                        axesArray[row_idx,col_idx].fill_between(phases[:,0],lower_boundary, upper_boundary, label="95%",  color=confidenceColor)
+                    axesArray[row_idx,col_idx].plot(phases[:,0],meanvalues, label="mean",  color=meansColor)
 
+                    #update limits:
+                    ymin = _np.min(lower_boundary)
+                    ymax = _np.max(upper_boundary) 
+                    if not _np.isnan(ymin):
+                        limits[row_idx,0] = min(ymin, limits[row_idx,0])
+                    if not _np.isnan(ymax):
+                        limits[row_idx,1] = max(ymax, limits[row_idx,0])
 
-            if withConfidenceInterval:
-                for m in range(data_mean.shape[1]):
-                    for row_idx, rowname in enumerate(plotrownames2indexvalues):
-                        if name is 'gains':
-                            continue
-                        ymin = _np.min(data_mean[:,row_idx]-1.96*data_sigma[:,row_idx])
-                        ymax = _np.max(data_mean[:,row_idx]+1.96*data_sigma[:,row_idx]) 
-                        if not _np.isnan(ymin):
-                            limits[row_idx,0] = min(ymin, limits[row_idx,0])
-                        if not _np.isnan(ymax):
-                            limits[row_idx,1] = max(ymax, limits[row_idx,0])
-
-            if withGainsPlots:
-                i_gain = plotrownames2indexvalues['gains']
-                limits[i_gain,0] = min(limits[i_gain,0], _np.min(data_gains))
-                limits[i_gain,1] = max(limits[i_gain,1], _np.max(data_gains))
-                axesArray[mstates+0,i].axhline(0.0, label=None,  color=(0.4,0.4,0.4), linestyle=':')
-                for j in enumerate(dofs):
-                    if j!=i:
-                        axesArray[mstates+0,i].plot(c,data_gains[:,i,0,j], label=None,  color=kpCrossColor, linestyle=':')
-                        axesArray[mstates+0,i].plot(c,data_gains[:,i,1,j], label=None,  color=kvCrossColor, linestyle=':')
-                #plot the joint-local gains prominently and on top:
-                axesArray[mstates+0,i].plot(c,data_gains[:,i,0,i], label="gain kp",  color=kpColor)
-                axesArray[mstates+0,i].plot(c,data_gains[:,i,1,i], label="gain kv",  color=kvColor)
-
-
-        #sample the distribution to plot actual trajectories, times the number given by "withSampledTrajectories":
-        alpha = _np.sqrt(2.0 / (1+withSampledTrajectories))
+        #sample the distribution to plot actual trajectories, times the number given by "addExampleTrajectories":
+        if addExampleTrajectories is None:
+            addExampleTrajectories = 0
+        alpha = _np.sqrt(2.0 / (1+addExampleTrajectories))
         for ax in axesArray.flatten():
-            ax.set_prop_cycle(sampledTrajectoryStyleCycler)
+            ax.set_prop_cycle(exampleTrajectoryStyleCycler)
 
-        generalized_phases = _np.zeros((num, self._ntm.indexSizes['gphi']))
-        generalized_phases[:,0] = c
-        generalized_phases[:,1] = dcdts
-        for j in range(withSampledTrajectories):
-            yvalues = self.sampleTrajectory(generalized_phases)
+        for j in range(addExampleTrajectories):
+            yvalues = self.sampleTrajectory(phases)
             #update the desired plotting limits:
-            for m, rowname in enumerate(plotrownames2indexvalues):
+            for m, rowname in enumerate(whatToPlot):
+                if rowname == 'gains':
+                    continue
                 r_idx, g_idx = plotrownames2indexvalues[rowname]
-                ymin = _np.min(yvalues[:,r_idx,g_idx,:])
-                ymax = _np.max(yvalues[:,r_idx,g_idx,:])
-                limits[m][0] = min(limits[m][0],ymin)
-                limits[m][1] = max(limits[m][1],ymax)
-                for i, dof in enumerate(dofs):
-                    axesArray[ m, i].plot(c, yvalues[:,r_idx,g_idx,dof], alpha=alpha, linewidth=linewidth )
+                ymin = _np.min(yvalues[:,r_idx,:,g_idx])
+                ymax = _np.max(yvalues[:,r_idx,:,g_idx])
+                limits[row_idx,0] = min(limits[row_idx,0],ymin)
+                limits[row_idx,1] = max(limits[row_idx,1],ymax)
+                for i, dof in enumerate(dofs_to_plot):
+                    axesArray[row_idx,col_idx].plot(phases[:,0], yvalues[:,r_idx,dof,g_idx], alpha=alpha, linewidth=linewidth )
 
         if 'observedTrajectories' in self.__dict__:
             for traj in self.observedTrajectories:
                 phase, duration, posvalues, velvalues, tauvalues = traj
 
+                if scaleToExpectedDuration:
+                    times = phases[:,0] * self.expectedDuration
+                    dcdt = 1.0 / self.expectedDuration
+                else:
+                    times = phases[:,0] * 1.0
+                    dcdt = 1.0
+                    
                 #compute values for velocity plots:
                 if velvalues is None: #compute velocities from the positions if they are not specified
-                    d_posvalues = (posvalues[:,1:] - posvalues[:,:-1]) / (phase[1:] - phase[:-1]) * dcdt
+                    d_posvalues = (posvalues[:,1:] - posvalues[:,:-1]) / (phases[1:,0] - phases[:-1,0]) * dcdt
                 else:
                     d_posvalues = (velvalues[:,1:]+velvalues[:,1:])* 0.5* dcdt
-                d_phasevalues = 0.5* (phase[1:]+phase[:-1])
+                d_phasevalues = 0.5* (phases[1:,0]+phases[:-1,0])
 
                 data = {
-                    'position': [phases, posvalues],
-                    'velocity': [d_phases, d_phasevalues],
-                    'torque':   [phases, tauvalues]
+                    'position': [times, posvalues],
+                    'velocity': [d_phasevalues, d_posvalues],
+                    'torque':   [times, tauvalues]
                 }
                 
 
-                if scaleToExpectedDuration:
-                    times = phase * self.expectedDuration
-                    dcdt = 1.0 / self.expectedDuration
-                else:
-                    times = phase 
-                    dcdt = 1.0
-
-                for m, rowname in enumerate(plotrownames2indexvalues):
-                    if rowname == 'torque' and tauvalues == None :
-                        continue
+                for row_idx, rowname in enumerate(whatToPlot):
                     r_idx, g_idx = plotrownames2indexvalues[rowname]
                     x,y = data[rowname]
                     ymin = _np.min(y[:,r_idx,g_idx,:])
                     ymax = _np.max(y[:,r_idx,g_idx,:])
-                    limits[m][0] = min(limits[m][0],ymin)
-                    limits[m][1] = max(limits[m][1],ymax)
+                    limits[row_idx,0] = min(limits[row_idx,0],ymin)
+                    limits[row_idx,1] = max(limits[row_idx,1],ymax)
 
                     for i, dof in enumerate(dofs):
                         axesArray[ m, i].plot(x, y[dof,:], alpha=alpha, linewidth=linewidth, color=observedColor )
 
-        padding=0.05
-        for i, dof in enumerate(dofs):
-            for m in range(plotrows):
-                axes = axesArray[m,i]  
-                axes.set_title(r"{0} {1}".format(plotrownames[m], dof))
+        limit_padding=0.05
+        for col_idx, dof in enumerate(dofs_to_plot):
+            for row_idx, rowname in enumerate(whatToPlot):
+                axes = axesArray[row_idx,col_idx]  
+                axes.set_title(r"{0} {1}".format(rowname, dof))
                 axes.set_xlim((0.0, 1.0))
-                if m == plotrows - 1:
+                if row_idx == plotrows-1: #last row?
                     axes.set_xticks([0.0,0.5, 1.0])
                     if scaleToExpectedDuration:
                         axes.set_xticklabels(['0', 'time [s]', '{0:0.1f}'.format(self.expectedDuration)])
@@ -695,27 +685,29 @@ meansMatrix
                         axes.set_xticklabels(['0', 'phase', '1'])
                 else:
                     axes.get_xaxis().set_visible(False)
-                if i == 0:
-                    axes.set_ylabel(units[plotrownames[m]])
+                if col_idx == 0: #first column?
+                    axes.set_ylabel(units[rowname])
                 else:
                     axes.get_yaxis().set_visible(False)
-                lim = limits[plotrownames[m]]
+                lim = limits[row_idx,:]
                 avg = _np.mean(lim)
                 delta = max(0.5*(lim[1]-lim[0]), 0.1*abs(avg))
-                ymax = avg+delta*(1+padding)
-                ymin = avg-delta*(1+padding)
-                axes.set_ylim(ymin,ymax )
+                ymax = avg+delta*(1+limit_padding)
+                ymin = avg-delta*(1+limit_padding)
+#                axes.set_ylim(ymin,ymax )
+                axes.set_ylim(plotRanges[rowname][0],plotRanges[rowname][1])
         _plt.tight_layout()
+        return fig
 
 
     def plotCovarianceTensor(self, normalized=True):
         """
         plot a correlation tensor of shape (supports x dofs_w, supports x dofs_w,)
         """
-        cov_flat = self._ntm.tensorDataAsFlattened['Wcov']
+        cov_flat = self.tns.tensorDataAsFlattened['Wcov']
         
-        cov = self._ntm.tensorData['Wcov'].transpose(axes=[0,1,2,3,4,5,6,7])
-        variance_view = _np.einsum('ijklijkl->ijkl', self._ntm.tensorData['Wcov'])
+        cov = self.tns.tensorData['Wcov'].transpose(axes=[0,1,2,3,4,5,6,7])
+        variance_view = _np.einsum('ijklijkl->ijkl', self.tns.tensorData['Wcov'])
         
         sigmas = _np.sqrt(variance_view)
 
@@ -738,9 +730,9 @@ meansMatrix
         _plt.axis([0, image.shape[0], 0, image.shape[1]])
         _plt.gca().set_aspect('equal', 'box')
 
-        for i in range(self._ntm.indexSizes['rtilde']):
-            for j in range(self._ntm.indexSizes['stilde']):
-                for k in range(self._ntm.indexSizes['dtilde']):
+        for i in range(self.tns.indexSizes['rtilde']):
+            for j in range(self.tns.indexSizes['stilde']):
+                for k in range(self.tns.indexSizes['dtilde']):
                     if j == 0 and i==0:
                         continue
                     if j== 0:
@@ -750,10 +742,10 @@ meansMatrix
                     _plt.axhline(i *n_supports*n_dofs + j * n_dofs , color='k', linewidth=linewidth)
                     _plt.axvline(i *n_supports*n_dofs + j * n_dofs, color='k', linewidth=linewidth)
 
-        elementnames = list(range(self._ntm.indexSizes['stilde'],0,-1)) + list(range(self._ntm.indexSizes['stilde'],0,-1))
-        xticks = range(image.shape[0] - self._ntm.indexSizes['dtilde']//2,0, -self._ntm.indexSizes['dtilde'])
+        elementnames = list(range(self.tns.indexSizes['stilde'],0,-1)) + list(range(self.tns.indexSizes['stilde'],0,-1))
+        xticks = range(image.shape[0] - self.tns.indexSizes['dtilde']//2,0, -self.tns.indexSizes['dtilde'])
         _plt.xticks(xticks, elementnames)
-        yticks = range( self._ntm.indexSizes['dtilde']//2, image.shape[0], self._ntm.indexSizes['dtilde'])
+        yticks = range( self.tns.indexSizes['dtilde']//2, image.shape[0], self.tns.indexSizes['dtilde'])
         _plt.yticks(yticks, elementnames)
         _plt.colorbar(shrink=0.6, aspect=40, ticks=[-1,0,1], fraction=0.08)
         if normalized:

@@ -1,42 +1,68 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Thu Dec 14 09:19:06 2017
 
-This test creates a one-dimensional ProMP with 10 supports
-
-The test should create a sinus trajectory with low variance in the middle and
-high variance at start and end of the trajectory
-
-@author: raphael
+Test whether interface functions work in the default
+@author: Raphael Deimel
 """
 
 import sys
-sys.path.insert(0,"../")
-import promp
+sys.path.insert(0,"../src/")
+import promep
 
 import numpy as _np
 import matplotlib.pylab as pylab
 
-#try to change this:
-n=10 #nr of supports / basis functions
+import matplotlib.pyplot as plt
 
-meansMatrix =  10.0 *_np.sin( _np.linspace(-0.2*_np.pi, 2.2*_np.pi, n)) #+ _np.random.normal(0, 5, n)
-meansMatrix.shape = (n, 1)
 
-sigmas= _np.diag(10.0 *_np.cos( _np.linspace(0.0, 1*_np.pi, n))) #+ _np.random.normal(0, 5, n)
-#sigmas = 10*_np.diag(_np.random.chisquare(4, n))/4
-corr_matrix = _np.full((n,n), 0.0)
-_np.fill_diagonal(corr_matrix, 1.0)
-covarianceMatrix = _np.dot(sigmas, _np.dot(corr_matrix,sigmas)) #  = sigmas @ corr_matrix @ sigmas
-covarianceMatrix.shape = (n,1,n,1)
-cov_flat = covarianceMatrix.reshape((n,n))
-md = promp.MechanicalStateDistributionDescription(dofs=1, derivativesCountEffort=0)
-ik = promp.InterpolationKernelGaussian(count=n, mstateDescription=md)
-mp1 = promp.ProMP(meansMatrix, covarianceMatrix, interpolationKernel=ik)
-#mp1 = promp.ProMP(meansMatrix, covarianceMatrix)
 
-mp1.plot(withSampledTrajectories=5,withGainsPlots=False)
+p_different = promep.ProMeP(index_sizes={'gphi':1}) #create promep where all indices used are of different size
+
+
+#promps only model motion, 
+promp = promep.ProMeP(index_sizes={'r': 2, 'rtilde':2, 'g': 2, 'gphi':2, 'gtilde':1 })
+promp = promep.ProMeP(index_sizes={'derivatives': 1, 'realms': 1})
+
+promp_modelfree = promep.ProMeP(index_sizes={ 'g': 2, 'gphi':1, 'gtilde':3 })
+
+
+p = promep.ProMeP(index_sizes={'dofs': 4, 'interpolation_parameters':11, 'realms':2, 'derivatives':3}, expected_duration=10.)
+
+Wmean = _np.zeros(p.tns.tensorShape['Wmean'])
+rtilde = 0
+gtilde = 0
+for dtilde in range(p.tns.indexSizes['dtilde']):
+    Wmean[rtilde,gtilde,:,dtilde] += 0.3456 * _np.cos(_np.linspace(0, 3.0*dtilde, p.tns.indexSizes['stilde']))
+
+rtilde = 1
+gtilde = 2
+for dtilde in range(p.tns.indexSizes['dtilde']):
+    Wmean[rtilde,gtilde,:,dtilde] += - 5 * dtilde
+    Wmean[rtilde,1,:,dtilde] += _np.linspace(0, 15, p.tns.indexSizes['stilde']) 
+
+Wcov = _np.zeros(p.tns.tensorShape['Wcov'])
+
+
+Wcov_flat = _np.zeros(p.tns.tensorShapeFlattened['Wcov'])
+for i in range(Wcov_flat.shape[0]):
+    Wcov_flat[i,i] = 0.2
+Wcov = Wcov_flat.reshape(p.tns.tensorShape['Wcov'])
+#r,g,s,d
+Wcov[1,0:2,:,:, :,:,:,:] = 0.0
+Wcov[:,:,:,:, 1,0:2,:,:] = 0.0
+
+Wcov[0,1:3,:,:, :,:,:,:] = 0.0
+Wcov[:,:,:,:, 0,1:3,:,:] = 0.0
+
+
+p.setParameterDistribution(Wmean, Wcov)
+
+sampled = p.sample()
+
+fig = p.plot(addExampleTrajectories=None)
+
+m = p.getDistribution([0.5])
 
 
 if __name__=='__main__':

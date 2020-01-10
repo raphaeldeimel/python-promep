@@ -13,7 +13,7 @@ also to sample trajectories from a ProMeP
 import numpy as _np
 
 
-class NamedTensorsManager(object):
+class TensorNameSpace(object):
     """
     This is kind of a band-aid class to augment current numpy/tensorflow/pytorch versions with 
     named indices as well as providing the notion of upper and lower indices for proper tensor contraction semantics
@@ -81,7 +81,7 @@ class NamedTensorsManager(object):
         name2 = name + '_'
         self.indexSizes[name] = size
         self.indexSizes[name2] = size
-        if  values is None:
+        if values == None:
             self.indexValues[name] = None
             self.indexValues[name2] = None            
         else:
@@ -122,6 +122,7 @@ class NamedTensorsManager(object):
                 raise ValueError(f'{external_array.shape} != {tensor_shape}')
             self.tensorData[name] = external_array  #set a reference to an external data
         self.tensorShape[name] = tensor_shape
+        self.tensorShapeFlattened[name] = tensor_shape_flattened
         view_flat = self.tensorData[name].view()
         view_flat.shape = tensor_shape_flattened
         self.tensorDataAsFlattened[name] = view_flat
@@ -206,7 +207,6 @@ class NamedTensorsManager(object):
             result_name = tensornameA + ':' + tensornameB
         
         self.registerTensor(result_name, (resultTensorIndicesUpper,resultTensorIndicesLower))
-        print(result_name, (resultTensorIndicesUpper,resultTensorIndicesLower), tensorDotAxesTuples, reorder_upper_lower_indices)
         self.registeredContractions[result_name] = (tensornameA, tensornameB, tuple(tensorDotAxesTuples), reorder_upper_lower_indices)
         self.update_order.append(result_name)
         return
@@ -351,7 +351,23 @@ class NamedTensorsManager(object):
         """
         if name not in self.tensorData:
             raise ValueError()
-        _np.copyto(self.tensorData[name], values)
+        if values is not None:
+            _np.copyto(self.tensorData[name], values)
+
+    def setTensorToIdentity(self, name):
+        """
+        set a (p,p)-type tensor to the Kronecker delta
+        
+        Warning: make sure that the sizes and order of upper and lower indices match, i.e. that:
+            (a,b),(a_,b_) -> delta(a,a_) : delta(b,b_)
+        
+        """
+        row, column = self.tensorShapeFlattened[name]        
+        if row != column:  #not exactly what we want to test
+            raise ValueError("Cannot set identity if upper and lower indices don't match!")
+        self.setTensor(name, 0.0)
+        _np.fill_diagonal(self.tensorDataAsFlattened[name], 1.0)
+
 
     def update(self, *args):
         """
