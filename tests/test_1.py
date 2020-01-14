@@ -7,6 +7,7 @@ Test whether interface functions work in the default
 """
 
 import sys
+import os
 sys.path.insert(0,"../src/")
 import promep
 
@@ -27,7 +28,7 @@ promp = promep.ProMeP(index_sizes={'derivatives': 1, 'realms': 1})
 promp_modelfree = promep.ProMeP(index_sizes={ 'g': 2, 'gphi':1, 'gtilde':3 })
 
 
-p = promep.ProMeP(index_sizes={'dofs': 4, 'interpolation_parameters':11, 'realms':2, 'derivatives':3}, expected_duration=10.)
+p = promep.ProMeP(index_sizes={'dofs': 4, 'interpolation_parameters':11, 'realms':2, 'derivatives':3}, expected_duration=10., name='test1')
 
 Wmean = _np.zeros(p.tns.tensorShape['Wmean'])
 rtilde = 0
@@ -65,8 +66,35 @@ fig = p.plot(addExampleTrajectories=None)
 m = p.getDistribution([0.5])
 
 
+
+#test serialization, writing, reading and deserialization:
+try:
+    os.mkdir('temp')
+except FileExistsError:
+    pass
+
+p.saveToFile(path='temp/')
+p2 = promep.ProMeP.makeFromFile('temp/test1.promep.h5')
+if p2.name != p.name:
+    raise Exception()
+if p2.expectedDuration != p.expectedDuration:
+    raise Exception()
+if p2.tns.indexSizes != p.tns.indexSizes:
+    raise Exception()
+if _np.any(p2.tns.tensorData['Wmean'] != p.tns.tensorData['Wmean']): #bit-perfect?
+    raise Exception()
+if _np.any(p2.tns.tensorData['Wcov'] != p.tns.tensorData['Wcov']):  #bit-perfect?
+    raise Exception()
+    
+
+
 if __name__=='__main__':
     import os
+    try:
+        os.mkdir('plots')
+    except FileExistsError:
+        pass
+    
     for n in pylab.get_fignums():    
         myname = os.path.splitext(os.path.basename(__file__))[0]
         if "REFERENCE" in os.environ:

@@ -15,13 +15,14 @@ from . import _namedtensors
 class JointSpaceToJointSpaceTransform(object):
     """
     Simplest possible mapping: Joint-space to Joint-space
+    
+    If update() is called, it reads in the tensor Yref and sets tensors Xref and T
     """
     
     def __init__(self, tensornamespace):
         self.tns = _namedtensors.TensorNameSpace(tensornamespace) #copies index definitions only
         #Path to compute T:
-        self.tns.registerTensor('Xref', (('rtilde','g', 'dtilde',),()) )        
-        self.tns.registerTensor('Yref', (('r','g', 'd',),()) )        
+        self.tns.registerTensor('Yref', (('r','d','g',),()), external_array=tensornamespace.tensorData['Yref'] ) #where to linearize
         self.tns.registerTensor('Jt', (('d',),('dtilde',)))
         self.tns.registerTensor('Jinv', (('d',),('dtilde',)))
         self.tns.registerBasisTensor('e_motion_motion', (('r',),('rtilde',)), (('motion',), ('motion',)) )
@@ -32,7 +33,9 @@ class JointSpaceToJointSpaceTransform(object):
             self.tns.registerBasisTensor('e_effort_effort', (('r',),('rtilde',)), (('effort',), ('effort',)) )
             self.tns.registerContraction('e_effort_effort', 'Jt')
 
-        self.tns.registerAddition('e_effort_effort:Jt', 'e_motion_motion:Jinv', result_name='T') #has indices (('r', 'd')('rtilde', 'dtilde'))
+        #computed output tensors:
+        self.tns.registerTensor('Xref', (('rtilde','dtilde','g'),()), external_array=tensornamespace.tensorData['Xref']  )      
+        self.tns.registerAddition('e_effort_effort:Jt', 'e_motion_motion:Jinv', result_name='T', out_array=tensornamespace.tensorData['T']) #has indices (('r', 'd')('rtilde', 'dtilde'))
 
         self.tns.setTensorToIdentity('Jt')
         self.tns.setTensorToIdentity('Jinv')
@@ -45,15 +48,8 @@ class JointSpaceToJointSpaceTransform(object):
         self.update()
         
     def update(self):
-        self.tns.update()
-
-    def get_T_view(self):
-        return self.tns.tensorData['T']
-    
-    def get_Xref_view(self):
-        return self.tns.tensorData['Xref']
-
-    def get_Yref_view(self):
-        return self.tns.tensorData['Yref']
+        # for other mappings: set Xref, Jt and Jinv here
+        self.tns.setTensor('Xref', self.tns.tensorData['Yref']) #for joint to joint space, simply copy the reference point
+        self.tns.update() #recomputes T
 
 

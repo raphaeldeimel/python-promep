@@ -19,6 +19,7 @@ import time as _time
 import os as _os
 import matplotlib.pyplot as _plt
 import matplotlib as _mpl
+import pprint as  _pprint
 
 from promep import *
 
@@ -28,67 +29,6 @@ from  scipy.special import betainc as _betainc
 from sklearn import covariance as _sklearncovariance
 
 
-def estimateMean(wSamples, initialVariance, tolerance=1e-7):
-    nSamples = wSamples.shape[0]
-    wsamples_flat = _np.reshape(wSamples, (nSamples,-1) )  
-    means_flat = _np.mean(wsamples_flat, axis=0)
-    means = means_flat.reshape(wSamples.shape[1], wSamples.shape[2])
-    return means
-
-def estimateMultivariateGaussianCovariances(wSamples, initialVariance=None, tolerance=1e-7):
-    """
-    estimate the values of a multivariate gaussian distribution
-    from the given set of samples
-
-    wSamples: array of size (n, i1, i2) with n=number of samples
-
-    initialVariance: initial variance to use as regularization when using few samples
-
-    returns: (means, covarianceTensor)
-        means: matrix of shape (i1, i2)
-        covarianceTensor: array of shape (i1, i2, i2, i1)
-    """
-    nSamples = wSamples.shape[0]
-    wsamples_flat = _np.reshape(wSamples, (nSamples,-1) )  
-    means_flat = _np.mean(wsamples_flat, axis=0)
-    deviations_flat = _np.sqrt(_np.var(wsamples_flat, axis=0))
-    deviations_regularized = _np.clip(deviations_flat, tolerance, _np.inf)
-    wsamples_flat_normalized = (wsamples_flat - means_flat) / deviations_regularized
-    tensorshape =  (wSamples.shape[1], wSamples.shape[2], wSamples.shape[1], wSamples.shape[2])
-    
-    #use sklearn for more sophisticated covariance estimators:
-    model  = _sklearncovariance.OAS()  #Alternatives: OAS, GraphLasso , EmpiricalCovariance
-    model.fit(wsamples_flat_normalized)
-    correlationMatrix = model.covariance_.copy()
-    assertCovTensorIsWellFormed(correlationMatrix.reshape(tensorshape), tolerance)    
-
-    scale = _np.diag(deviations_regularized)
-    covarianceTensor = _np.dot(_np.dot(scale,correlationMatrix),scale.T) 
-    covarianceTensor = 0.5*(covarianceTensor + covarianceTensor.T) #ensure symmetry in face of numeric deviations
-    if initialVariance is not None:
-        covarianceTensor += (_np.eye(wSamples.shape[1]*wSamples.shape[2])*initialVariance - covarianceTensor) * (1./(nSamples+1))
-    covarianceTensor.shape = tensorshape
-    assertCovTensorIsWellFormed(covarianceTensor, tolerance)
-    return covarianceTensor
-
-
-def assertCovTensorIsWellFormed(covarianceTensor, tolerance):
-        covarianceMatrix = flattenCovarianceTensor(covarianceTensor)
-        if _np.any( _np.abs(covarianceMatrix.T - covarianceMatrix) > tolerance):
-            raise RuntimeWarning("Notice: Covariance Matrix is not symmetric. This usually is an error")
-        #test the cov matrix of each dof individually to better pinpoint errors:
-        for i in range(covarianceTensor.shape[1]):
-            try:
-                _np.linalg.cholesky(covarianceTensor[:,i,:,i])  #will fail if matrix is not positive-semidefinite
-            except _np.linalg.linalg.LinAlgError:
-                eigenvals = _np.linalg.eigvals(covarianceTensor[:,i,:,i])
-                raise RuntimeWarning("Notice: Covariance Matrix of dof {0} is not positive semi-definite. This usually is an error.\n Eigenvalues: {1}".format(i, eigenvals))
-        #test complete tensor, i.e. also across dofs:
-        try:
-            _np.linalg.cholesky(covarianceMatrix)  #will fail if matrix is not positive-semidefinite
-        except _np.linalg.linalg.LinAlgError:
-            eigenvals = _np.linalg.eigvals(covarianceMatrix)
-            raise RuntimeWarning("Notice: Covariance tensor is not positive semi-definite. This usually is an error.\n Eigenvalues of flattened tensor: {1}".format(i, eigenvals))
 
 
 #set a sensible default color map for correlations
@@ -224,22 +164,24 @@ class ProMeP(object):
                   self.tns.registerIndex(name, self.index_sizes[name], values=['motion', 'effort'][:self.index_sizes[name]])
             else:
                   self.tns.registerIndex(name, self.index_sizes[name], values = list(range(self.index_sizes[name])))
-                  
-        #set up hooks to compute tensors PHI and T:
+
+
         self.PHI_computer = PHI_computer_cls(self.tns)   
-        self.T_computer = T_computer_cls(self.tns) #should implement a get_T_view(), get_Xref_view() and get_Yref_view() method
-            
+                  
         #register all tensors not being computed by operators:
         #i.e. input tensors:
-        self.tns.registerTensor('phase', (('gphi',),()) )  #generalized phase vector        
+        self.tns.registerTensor('phase', (('g',),()) )  #generalized phase vector        
         self.tns.registerTensor('Wmean', (('rtilde','gtilde','stilde','dtilde'),()) )
         self.tns.registerTensor('Wcov', (( 'rtilde','gtilde','stilde','dtilde'),( 'rtilde_','gtilde_','stilde_','dtilde_')) )
         self.tns.registerTensor('PHI', (('gphi',),('stilde',)), external_array = self.PHI_computer.get_PHI_view() )
         self.tns.registerTensor('P', (('g',),('gphi','gtilde')) )
-        self.tns.registerTensor('Xref', (('rtilde','g', 'dtilde',),()), external_array = self.T_computer.get_Xref_view() )  #link to T_computer's T tensor      
-        self.tns.registerTensor('Yref', (('r','g', 'd',),()) , external_array = self.T_computer.get_Yref_view())            #link to T_computer's Yref tensor
-        self.tns.registerTensor('T', (('r','d'),('rtilde', 'dtilde')), external_array = self.T_computer.get_T_view())       #link to T_computer's Xref tensor
+        self.tns.registerTensor('Yref', (('r','d','g',),()) )    
+        self.tns.registerTensor('Xref', (('rtilde','dtilde','g',),()) )   
+        self.tns.registerTensor('T', (('r','d'),('rtilde', 'dtilde')) )       #link to T_computer's Xref tensor
         #register all operations being used on tensors:
+
+        #set up hooks to compute tensors PHI and T:
+        self.T_computer = T_computer_cls(self.tns) #should implement a get_T_view(), get_Xref_view() and get_Yref_view() method
         
         #path to compute PSI:
         self.tns.registerContraction('P', 'PHI')
@@ -257,7 +199,7 @@ class ProMeP(object):
         
         #project the covariances of weights to covariances of trajectory:
         self.tns.registerContraction('PSI', 'Wcov')
-        self.tns.registerContraction('PSI:Wcov', '(PSI)^t', result_name='Ycov')
+        self.tns.registerContraction('PSI:Wcov', '(PSI)^T', result_name='Ycov')
 
        
         self.phaseAssociable = True #indicate that this motion generator is parameterized by phase
@@ -291,13 +233,13 @@ class ProMeP(object):
         necessary to recreate this ProMeP
 
         """
-        serializedDict = collections.OrderedDict()
+        serializedDict = {}
         serializedDict[u'class'] = type(self).__name__
         serializedDict[u'name'] = self.name
-        serializedDict[u'promep_version'] = "3"
-        serializedDict[u'index_sizes'] = self.index_sizes
-        serializedDict[u'Wmean'] = self.tensorData['Wmean']
-        serializedDict[u'Wcov'] = self.tensorData['Wcov']
+        serializedDict[u'serialization_version'] = "3"
+        serializedDict[u'index_sizes'] = {key: self.tns.indexSizes[key] for key in self.tns.indexSizes if not key.endswith('_')}
+        serializedDict[u'Wmean'] = self.tns.tensorData['Wmean']
+        serializedDict[u'Wcov'] = self.tns.tensorData['Wcov']
         serializedDict[u'expected_duration'] = self.expectedDuration
         return serializedDict
 
@@ -307,11 +249,11 @@ class ProMeP(object):
         """
         Create a ProMeP from a description yielded by ProMP.serialize()
         """
-        if int(serializedDict["promep_version"]) > 3:
-            raise RuntimeError("Unknown (future?) serialization format version: {0}".format(serializedDict["serialization_format_version"]))
+        if int(serializedDict["serialization_version"]) > 3:
+            raise RuntimeError("Unknown (future?) serialization format version: {0}".format(serializedDict["serialization_version"]))
 
-        if int(serializedDict["promep_version"]) < 3:
-            raise RuntimeError("Old incompatible serialization format version: {0}".format(serializedDict["serialization_format_version"]))
+        if int(serializedDict["serialization_version"]) < 3:
+            raise RuntimeError("Old incompatible serialization format version: {0}".format(serializedDict["serialization_version"]))
 
         kwargs = {
             'index_sizes': serializedDict[u'index_sizes'],
@@ -397,6 +339,10 @@ meansMatrix
 
         """
         self.tns.setTensor('phase', generalized_phase)
+        if currentDistribution is None:
+            self.tns.setTensor('Yref', 0.0)  #for joint-space as task space, we do not need to care
+        else:
+            self.tns.setTensor('Yref', currentDistribution.means) #but usually, set a linearization reference point for the T_computer
         self._updateP() #call the code that computes map between phase and time derivatives. implemented directly in this class
         self.PHI_computer.update() #call the hook that computes the interpolating map PHI:
         self.T_computer.update() #call the hook that computes the linear(-ized) task-space map T:
@@ -762,331 +708,521 @@ meansMatrix
 
 
 
-
-
-
-class ProMPFactory(object):
-    """
-    collection of class methods to create ProMPs in different ways
-    """
-
-    @classmethod
-    def copy(cls, promp, name='unnamed copy'):
+    def learnFromObservations(self, 
+            observations, 
+            useOnly=((0,0),(1,2)),  
+            max_iterations=500, 
+            minimal_relative_improvement=0.0001,
+            ):
         """
-        Duplicate a promp with a different name
-        """
-        return ProMP(promp.meansMatrix, promp.covarianceTensor, promp.interpolationKernel, name=name)
-
-
-    @classmethod
-    def makeFromGaussianDistribution(cls, name, meansMatrix, covarianceTensor):
-        """
-        Create a ProMP from a gaussian multivariate distribution over interpolation parameters
-
-        meansMatrix: expectation value of the parameters, of shape (supports x dofs)
-        covarianceTensor: covariances between the parameters, of shape (supports x dofs x supports x dofs)
-        """
-        supportsCount, dofs = meansMatrix.shape
-        ik = _ik.InterpolationKernelGaussian(supportsCount, dofs)
-        return ProMP(meansMatrix, covarianceTensor, ik, name=name)
-
-
-    @classmethod
-    def makeFromDict(cls, serializedDict):
-        """
-        Create a ProMP from a description yielded by ProMP.serialize()
-        """
-        if int(serializedDict["serialization format version"]) > 2:
-            raise RuntimeError("Unknown (future?) serialization format version: {0}".format(serializedDict["serialization format version"]))
-
-        ikclass = _ik.__dict__[serializedDict[u'interpolation kernel class']]
-        ik  = ikclass(0,0,serializedDict=serializedDict)
-        mu = serializedDict[u'multivariate normal distribution means']
-        cov =  serializedDict[u'multivariate normal distribution covariances']
-        name =  serializedDict[u'name']
-        if u'expected duration' in serializedDict:
-            expectedDuration = serializedDict[u'expected duration']
-        else:
-            expectedDuration = 1.0
-        if u'phase velocity relative floor' in serializedDict:
-             phaseVelocityRelativeFloor = serializedDict[u'phase velocity relative floor'] 
-        else:
-            phaseVelocityRelativeFloor = 0.0
-            
-        try:
-            fakeSigmaTaus = (serializedDict[u'fake effort position variance'],serializedDict[u'fake effort velocity variance'])
-            fakeEffort = True
-        except KeyError:
-            fakeEffort = False
-            fakeSigmaTaus = None
-    
-        #backwards compatibility:
-        if serializedDict["serialization format version"] == "1":
-            print("Data are in old serialization format! Consider migrating it!")
-            cov = cov.transpose(0,1,3,2)
-
-        return ProMP(mu, cov, ik, fakeSigmaTaus=fakeSigmaTaus, name=name, expectedDuration=expectedDuration, phaseVelocityRelativeFloor=phaseVelocityRelativeFloor)
-
-    @classmethod
-    def makeReverseInPhase(cls, name, prompObj):
-        """
-        Create a ProMP by reversing the phase of an existing ProMP 
-
-        """
-        meansMatrix = prompObj.priorMeansMatrix[::-1,:]
-        covarianceTensor = prompObj.priorCovarianceTensor[::-1,:,::-1,:]
-        return ProMP(meansMatrix, covarianceTensor, prompObj.interpolationKernel, name=name)
-
-    @classmethod
-    def makeFromFile(cls, filename, h5path='/'):
-        """
-        Create a ProMP from a description saved in a hdf5 file using ProMP.saveToFile()
-        """
-        d = _h5.read(path=h5path, filename=filename)
-        if isinstance(d, _np.ndarray): #un-wrap from hdf5storage
-            d = d[0]
-
-        #TODO It's probably better to make sure ascii and uncode strings are not mixed when these files are
-        #       created
-        myDict = {}
-        for k,v in d.items():
-            try:
-                k = k.decode("utf-8")
-            except AttributeError:
-                pass
-            try:
-                v = v.decode("utf-8")
-            except AttributeError:
-                pass
-            myDict[k] = v
-
-        d = myDict
-        return ProMPFactory.makeFromDict(d)
-
-
-    @classmethod
-    def makeFromTrajectories(cls, 
-        name, 
-        supportsCount, 
-        positionsList, 
-        velocitiesList,
-        torquesList, 
-        phasesList=None, 
-        phaseVelocitiesList=None,
-        initialVariance=1e-3,
-        computeMeanFromSubset=None,
-        expectedDuration = 3.0,
-        useSyntheticTorques=True,
-        syntheticKp=20,
-        syntheticKv=10,
-        phaseVelocityRelativeFloor=0.0,
-        ):
-        """
-        Create a ProMeP from a list of position and torque trajectories
-
-        name: name string of the new ProMeP (ProMP over motion and effort)
         
-        supportsCount:  how many supports should be used to parameterize the distribution?
+        compute parameters from a list of observations
+        
+        Observations are tuples of (phases, values, Xrefs, Yrefs) tensors (data arrays)
+        
+        phases: Generalized phases of shape (n, 'd')
+        means: observed values at the given phases, of shape (n, 'd', 'g')
+        Xref, Yref: Task space linearization references, of shape (n, 'rtilde', 'dtilde', 'gtilde', 'stilde' ) and (n, 'r', 'd', 'g') respectively
+        
 
-        positionsList: list of arrays of shape (dofs x sampleCount)
-                The rows are of form [dof0, dof1, dof2,....]
+        useonly: only use the combination of (realm, derivative) to learn, assume that in all other combinations data are not trustworthy
+       
+        stabilize: value in range 0-1, 0 does does full EM updates, nonzero values slow down convergence but improve stability
+       
+        Implements the expectation-maximization procedure of the paper "Using probabilistic movement primitives in robotics" by Paraschos et al.
+        """
+        
+        # set up computation of PSIhatInv = (PSIhat)^-1 = (Yref - (Yrefhat - T:Xrefhat) )^-1
+        tns_learn = _namedtensors.TensorNameSpace(self.tns)
+        self.tns_learn =tns_learn
+        tns_learn.registerIndex('observations', len(observations))
+        tns_learn.registerIndex('samples', tns_learn.indexSizes['stilde']*10)
+        
+        #tensors to do EM on:
+        tns_learn.registerTensor('Wmean', (['rtilde', 'gtilde', 'stilde', 'dtilde'], ()) )
+        tns_learn.registerTensor('Wcov', (['rtilde', 'gtilde', 'stilde','dtilde'], ['rtilde_', 'gtilde_', 'stilde_','dtilde_'],) )
 
-        velocitiesList: None or list of arrays of shape (dofs x sampleCount)
-                The rows are of form [dof0, dof1, dof2,....]
+        
+        #tensors to aggregate increments for maximization:
+        tns_learn.registerTensor('sumWcov', (['rtilde', 'gtilde', 'stilde','dtilde'], ['rtilde_', 'gtilde_', 'stilde_','dtilde_'],) )
+        tns_learn.registerTensor('sumWmean', (['rtilde', 'gtilde', 'stilde', 'dtilde'], ()) )
                 
-                Note: Velocities are not used for learning, but are used for plotting. 
-                      If None is specified, then plotting infers velocities from the positions and phases
-
-        torquesList:list of vectors giving the torques of shape (dofs x sampleCount)
-                The rows are of form [dof0, dof1, dof2,....]
-
-        phasesList: list of vectors giving the phase for each sample
-                        if None, position samples are assumed to be equally spaced
-                        if None, we assume all trajectories to have the same number of samples
-                    (we assume samples to be sorted by phase)
-        phaseVelocitiesList: list of vectors giving the phase velocity for each sample
-                        if None, velocities are set by discrete differention of the phase
-
-        initialVariance: initial variance to use to regularize the parameter learning. 
-                            This is especially useful for very small sample sizes to specify a desired minimum variance
-                            Note: The influence diminishes when increasing the number of samples
+        #compute the precision matrix in Y space for a current sample i:
+        tns_learn.registerTensor('PSIi', (['r', 'd', 'g'], ['rtilde', 'gtilde', 'stilde','dtilde']))
+        tns_learn.registerTranspose('PSIi')
+        tns_learn.registerContraction('PSIi', 'Wcov')
+        tns_learn.registerContraction('PSIi:Wcov', '(PSIi)^T')
+        tns_learn.registerInverse('PSIi:Wcov:(PSIi)^T', result_name='Yiprecision', flip_underlines=False)
         
-        computeMeanFromSubset: If set to a list of indices, use only those trajectory observations for computing the trajectory meanTorque
-                            This can be used to exclude outlier trajectories, or synthetically generated trajectories that would only add noise
-                            If None, all provided trajectories will be used to compute the distribution mean
+        #compute the expectations:
+        tns_learn.registerTensor('Yi', (('r','d','g',),()) )
+        tns_learn.registerContraction('PSIi', 'Wmean')
+        tns_learn.registerSubtraction('Yi', 'PSIi:Wmean')
+        tns_learn.registerContraction('Yiprecision', '(Yi-PSIi:Wmean)')
+        tns_learn.registerContraction('(PSIi)^T', 'Yiprecision:(Yi-PSIi:Wmean)', result_name= 'Wmeanidelta', flip_underlines=True)
+        tns_learn.registerAddition('Wmean', 'Wmeanidelta', result_name= 'Wmeani')
+        
+        #compute negative-log-likelihood increment to judge progress:
+        tns_learn.registerTranspose('(Yi-PSIi:Wmean)')
+        tns_learn.registerContraction('(Yi-PSIi:Wmean)', 'Yiprecision' )
+        tns_learn.registerContraction('(Yi-PSIi:Wmean):Yiprecision','((Yi-PSIi:Wmean))^T', result_name='negLLidelta'  )
+        
+        #compute part of the maximization term for the covariance tensor:
+        tns_learn.registerTranspose('PSIi:Wcov')
+        tns_learn.registerContraction('(PSIi:Wcov)^T', 'Yiprecision')
+        tns_learn.registerContraction('(PSIi:Wcov)^T:Yiprecision', 'PSIi:Wcov', result_name='Wcovidelta')
+        tns_learn.registerSubtraction('Wcov', 'Wcovidelta', result_name= 'Wcovi')
 
-        expectedDuration: The nominal / expected duration of the ProMP. Used to correctly scale gains during learning, 
-                          and to plot velocities and gains w.r.t. time instead of phase
-                            
-        useSyntheticTorques: If true, create synthetic training data for the covariance matrix by emulating a pd controller on the distribution over motion
-        syntheticKp, syntheticKv: position and velocity gains of the pd controller, either:
-                                    - a scalar (use as SISO gain, same value for all dofs)
-                                    - a vector (use as SISO gain)
-                                    - arrays of shape (dofs x dofs) (MIMO gains)
-                                    - a dictionary of keyframes of the above, keyed by phase. I.e. {0.0: [10,20,30], 0.5: [10,0,30], 1.0: [0,0,30]}. 
-                                      (gains get linearly interpolated, beyond first and last keyframe their respective value is used)
+        first_part_steps = len(tns_learn.update_order)  #when computing, stop here and add Wmeani and Wcovi to sumWmean and sumWcov
+
+        #this is done separately, after Wmean has been updated:  
+        tns_learn.registerSubtraction('Wmeani', 'Wmean')      
+        tns_learn.registerTranspose('(Wmeani-Wmean)')  
+        tns_learn.registerContraction('(Wmeani-Wmean)', '((Wmeani-Wmean))^T', result_name='Wcoviempirical')
+    
+        _pprint.pprint(tns_learn.tensorIndices)
+       
+    
+        iteration_count = 0 #maximum number of E-M iterations
+        negLL = []
+        tns_learn.setTensorToIdentity('Wcov', scale=0.1) #set the prior
+        tns_learn.setTensor('Wmean', 0.0) #set the prior  
+      
         
-        
-        syntheticKv:         velocity gain of the pd controller, array of shape (dofs x sampleCount) (you can use numpy casting rules) 
-                            
-                            
-        phaseVelocityRelativeFloor: If set to > 0, clip phase velocity to a minimal value phaseVelocityRelativeFloor * 1.0/(expectedDuration)
+
+        #preprocess observations into pairs of Yi and PSIi
+        psi_y_list = []
+        for observation_idx, (phases, values, Xrefs, Yrefs, Ts) in enumerate(observations):
+            num = phases.shape[0]
+            for n in range(num):
+                #compute PSIi:
+                self.tns.setTensor('phase', phases[n,:], (('g'),()) )
+                self.tns.setTensor('Xref', Xrefs[n,:,:,:], (('rtilde', 'dtilde', 'g'),()) ) 
+                self.tns.setTensor('Yref', Yrefs[n,:,:,:], (('r', 'd', 'g'),()) )                
+                self.tns.setTensor('T', Ts[n,:,:,:,:], (('r', 'd'),('rtilde', 'dtilde')) )
+                self._updateP() #call the code that computes map between phase and time derivatives. implemented directly in this class
+                self.PHI_computer.update() #call the hook that computes the interpolating map PHI from the phase:
+                #compute PSI only:
+                self.tns.update('P:PHI', 'PSI', 'O')
+                ydelta = values[n,:,:,:] #- self.tns.tensorData['O']
+                psi_y_list.append( ( self.tns.tensorData['PSI'].copy(), ydelta) ) #saving a view is enough
+
+        relative_improvement = 1.0
+        while iteration_count < max_iterations:
+            iteration_count = iteration_count+1        
+            Wmeani_list = []
+            tns_learn.setTensor('sumWmean', 0.0)
+            tns_learn.setTensor('sumWcov', 0.0)
+            negLL.append(0.0)
+            for observation_idx, (PSIi, Ydeltai) in enumerate(psi_y_list):
+                    tns_learn.setTensor('PSIi', PSIi, arrayIndices=self.tns.tensorIndices['PSI'])
+                    #set the observed sample:
+                    tns_learn.setTensor('Yi', Ydeltai, arrayIndices= (('r', 'd', 'g'),()))
+                    #compute the estimation step:
+                    #tns_learn.update()
+                    tns_learn.update(*tns_learn.update_order[:first_part_steps])
+                    #print(tns_learn.tensorData['Wmeani'])
+                    #aggregate contributions for M-step:
+                    tns_learn.addToTensor('sumWmean', tns_learn.tensorData['Wmeani'], tns_learn.tensorIndices['Wmeani'])
+                    tns_learn.addToTensor('sumWcov', tns_learn.tensorData['Wcovi'], tns_learn.tensorIndices['Wcovi'])
+                    Wmeani_list.append( tns_learn.tensorData['Wmeani'].copy() ) #remember for M-step
+                    negLL[-1] = negLL[-1] + tns_learn.tensorData['negLLidelta'] #aggregate negative log-likelihood total
+            
+            #do maximization step for means:
+            stabilize = (float(iteration_count) / max_iterations)**2
+            Wmean_prime = (1.0-stabilize) * _np.mean(Wmeani_list, axis=0) + stabilize * tns_learn.tensorData['Wmean']
+            tns_learn.setTensor('Wmean', Wmean_prime )
+            #do maximization step for covariances, using Wmean_prime
+            sumWcov = tns_learn.tensorData['sumWcov'].copy()
+            for Wmeani in Wmeani_list:
+                tns_learn.setTensor('Wmeani', Wmeani)
+                tns_learn.update('(Wmeani-Wmean)','((Wmeani-Wmean))^T','Wcoviempirical')
+                tns_learn.addToTensor('sumWcov', tns_learn.tensorData['Wcoviempirical'], tns_learn.tensorIndices['Wcoviempirical'])
+            Wcov_prime = (1.0-stabilize) * tns_learn.tensorData['sumWcov'] * (1.0/len(Wmeani_list)) + stabilize * tns_learn.tensorData['Wcov']
+            tns_learn.setTensor('Wcov', Wcov_prime, tns_learn.tensorIndices['sumWcov'] )
+            #re-symmetrize:
+            tns_learn.tensorDataAsFlattened['Wcov'][:,:] = 0.5*tns_learn.tensorDataAsFlattened['Wcov'] + 0.5* tns_learn.tensorDataAsFlattened['Wcov'].T
+            #terminate early if neg-log-likelihood of observations stops increasing:
+            n= 4
+            if len(negLL) > n:
+                relative_changes = [ abs(negLL[-i]-negLL[-i-1]/negLL[-i-1]) for i in range(1,n) ]
+                #print(relative_improvement)
+                print(negLL[-1])
+                print(_np.linalg.eigvals(tns_learn.tensorDataAsFlattened['Wcov']))
+                #print(_np.diag(tns_learn.tensorDataAsFlattened['Wcov']))
+                print(tns_learn.tensorData['Wmean'])
+                if max(relative_changes) < minimal_relative_improvement:
+                    break
+        self.negLL = _np.array(negLL)
+        #update yourself to the learnt estimate
+        self.tns.setTensor('Wmean', tns_learn.tensorData['Wmean'], tns_learn.tensorIndices['Wmean'])
+        self.tns.setTensor('Wcov', tns_learn.tensorData['Wcov'], tns_learn.tensorIndices['Wcov'])
+
+
+
+    def learnFromObservationsUsingLinReg(self, observations, useOnly=((0,0),(1,2)) ):
         """
-        if len(positionsList) == 0:
-            raise ValueError("no positions supplied")
-        dofs = positionsList[0].shape[0]
-        #todo: check that all trajectories have same dof count
-        md = _MechanicalStateDistributionDescription(dofs=dofs)
-        ik = _ik.InterpolationKernelGaussian(md, supportsCount)
-
-        #compute the pseudoinverse of the array mapping parameter to observed positions / torques:
-        if phasesList is None:
-            print("Warning: no phase provided")
-            if _np.any([ positionsList[0].shape != p.shape for p in positionsList]):
-                raise ValueError("If no phases are specificed, all trajectories must have the same number of samples!")
-            phases = _np.linspace(0.0, 1.0, positionsList[0].shape[-1])
-            if  phaseVelocitiesList is None:
-                phaseVelocitiesList = [_np.full(phases.shape, 1.0 / len(phases))] #assume dphidt=1.0
-            AInv = ik.getParameterEstimator(phases)
-            AInvIterator = _it.repeat(AInv)  #we can reuse the expensive computation for all other trajectories
-        elif isinstance(phasesList , _np.ndarray):
-            if _np.any([ positionsList[0].shape != p.shape for p in positionsList]):
-                raise ValueError("If only one phase vector is specificed, all trajectories must have the same number of samples!")
-            if  phaseVelocitiesList is None:
-                raise ValueError("Please provide a phase velocity too")
-            AInv = ik.getParameterEstimator(phasesList,phaseVelocitiesList)
-            AInvIterator = _it.repeat(AInv)  #we can reuse the expensive computation for all other trajectories
-            phasesList = _it.repeat(phasesList)
-            phaseVelocitiesList = _it.repeat(phaseVelocitiesList)
-        else:
-            AInvIterator = [ik.getParameterEstimator(p, dphidt) for p,dphidt in zip(phasesList,phaseVelocitiesList) ]
         
-        #select the subset of trajectories to use for means estimation (i.e. to skip synthetic trajectories)
-        if computeMeanFromSubset is not None:
-            useForMeanList = [False] * computeMeanFromSubset[0] + [True] * (computeMeanFromSubset[1]-computeMeanFromSubset[0]) + [False] * (len(positionsList)-computeMeanFromSubset[1])
-        else:
-                useForMeanList = _it.repeat(True)
+        compute parameters from a list of observations
         
-        #compute least-squares estimates for the parameters that generated each trajectory:
-        wSamples_mean = []
-        observedTrajectories=[]
-        if velocitiesList is None:
-            velocitiesList = _it.repeat(None)
+        Observations are tuples of (phases, values, Xrefs, Yrefs) tensors (data arrays)
+        
+        phases: Generalized phases of shape (n, 'd')
+        means: observed values at the given phases, of shape (n, 'd', 'g')
+        Xref, Yref: Task space linearization references, of shape (n, 'rtilde', 'dtilde', 'gtilde', 'stilde' ) and (n, 'r', 'd', 'g') respectively
+        
+
+        useonly: only use the combination of (realm, derivative) to learn, assume that in all other combinations data are not trustworthy
+        """
+        
+        # set up computation of PSIhatInv = (PSIhat)^-1 = (Yref - (Yrefhat - T:Xrefhat) )^-1
+        tns_learn = _namedtensors.TensorNameSpace(self.tns)
+        tns_learn.registerIndex('observations', len(observations))
+        tns_learn.registerIndex('samples', tns_learn.indexSizes['stilde']*10)
+        
+        #input tensors for each observation
+        tns_learn.registerTensor('PSIhat', (['r', 'd', 'g'], ['rtilde', 'dtilde', 'gtilde', 'stilde', 'samples']) )
+        tns_learn.registerTensor('Ohat', (('r', 'd', 'g'), ('samples',)) ) 
+        tns_learn.registerTensor('Yhat', (('r', 'd', 'g'), ('samples',)) ) 
+        #computations to perform: invert PSI, subtract the task frame offset O from the data Yhat, and contract both
+        tns_learn.registerInverse('PSIhat')
+        tns_learn.registerSubtraction('Yhat', 'Ohat')
+        tns_learn.registerContraction('(PSIhat)^#', '(Yhat-Ohat)') #yields '(PSIhat)^#:(Yhat-Ohat)'
+
+        #for now, computation of these tensors is hard-coded:
+        tns_learn.registerTensor('Wobservations', ((['observations', 'rtilde', 'dtilde', 'gtilde', 'stilde']), ()) )
+        tns_learn.registerTensor('Wmean', (['rtilde', 'dtilde', 'gtilde', 'stilde'], ()) )
+        tns_learn.registerTensor('Wcov', (['rtilde', 'dtilde', 'gtilde', 'stilde'], ['rtilde_', 'dtilde_', 'gtilde_', 'stilde_'],) )
+        
+        print(self.tns)
+        print(tns_learn)
+        #do linear regression on each observation individually to obtain samples in W:
+        for observation_idx, (phases, values, Xrefs, Yrefs) in enumerate(observations):
+            num = phases.shape[0]
             
-        for pos, vel, tau, phi, dphidt, AInv, useForMean in zip(positionsList, velocitiesList, torquesList, phasesList, phaseVelocitiesList, AInvIterator, useForMeanList):
-            #estimate mean weights, save observation
-            if useForMean:
-                mstate = _np.stack((tau,pos), axis=1)
-                w = dot(AInv, T(mstate), shapes=((2,3),(3,0)))
-                wSamples_mean.append(w)
-            observedTrajectories.append((phi, expectedDuration, pos, vel/dphidt, tau/dphidt ))
-        wSamples_mean = _np.stack(wSamples_mean)
-        meansEstimated = estimateMean(wSamples_mean, initialVariance)
+            #gather PSI projections for each sample into PSIhat:
+            for n in range(num):
+                self.tns.setTensor('phase', phases[n,:])
+                self.tns.setTensor('Xref', Xrefs[n,:,:,:]) #TODO: would be computed/overridden by T_computer!!
+                self.tns.setTensor('Yref', Yrefs[n,:,:,:])
+                
+                self._updateP() #call the code that computes map between phase and time derivatives. implemented directly in this class
+                self.PHI_computer.update() #call the hook that computes the interpolating map PHI:
+                self.T_computer.update() #call the hook that computes the linear(-ized) task-space map T, Xref and Yref:
+                #Now compute the actual ProMeP equation:
+                self.tns.update('P:PHI', 'PSI')
 
-        covariancesEstimated = estimateMultivariateGaussianCovariances(wSamples_mean, 1e-3)
-
-        if useSyntheticTorques:
-
-            promp_nosynth = ProMP(0*meansEstimated, covariancesEstimated, ik, name=name)
-
-            sample_multiplier = 5
-            sample_multiplier_supports = 5
+                #save into PSIhat and Ohat of the tns_learn namespace:
+                tns_learn.tensorData['PSIhat'][n,:,:,:,:,:,:,:] = self.tns.tensorData['PSI']
+                tns_learn.tensorData['Ohat'][n,:,:,:] = self.tns.tensorData['O']
             
-            #estimate covariance matrix:
-            wSamples = []
-            #first, generate a reference mean trajectory:
-            n = ik.supportsCount * sample_multiplier_supports
-            dt=1.0/n
-            meanTrajectory = _np.empty((dofs, n))
-            meanTrajectoryVel = _np.empty((dofs, n))
-            meanTorque = _np.empty((dofs, n))
-            synth_phase = _np.linspace(0.0, 1.0, n)
-            synth_phasevel = _np.full((n) , 1.0)
-            iPos = md.mStateNames2Index['position']
-            iVel = md.mStateNames2Index['velocity']
-            iTau = md.mStateNames2Index['torque']
-            
-            #create mean trajectory for plotting:
-            for i in range(n):
-                psi = ik.getPsiTime( synth_phase[i], synth_phasevel[i] )
-                y = dot(psi, meansEstimated, shapes=((2,2),(2,0)))
-                meanTrajectory[:,i] = y[iPos, :]
-                meanTrajectoryVel[:,i] = y[iVel, :]
-                meanTorque[:,i] = y[iTau, :]
-            synthAinv, synthA = ik.getParameterEstimator(synth_phase, synth_phasevel, alsoNonInv=True)
+            #compute the sample:
+            tns_learn.setTensor('Yhat', values) #set Yhat to current observed trajectory samples
+            tns_learn.update() #estimate a W for the given observation
+            #aggregate every Wsample into Wsamples:
+            tns_learn.tensorData['Wobservations'][observation_idx,:,:,:,:] = tns_learn.tensorData['(PSIhat)^#:(Yhat-Ohat)']
+        
+        #samples in W have been gathered. Now estimate the distribution parameters from them:
 
-            #create the gains matrix of the PD controller used to create synthetic torques:
-            K = _np.zeros(( n, md.mechanicalStatesCount, dofs, n, md.mechanicalStatesCount, dofs))
+        #estimate distribution from the estimated samples:        
+        tns_learn.setTensor('Wmean', _np.mean(tns_learn.tensorData['Wobservations'], axis=-1))  #need to make sure indices are ordered correctly!
 
-            #create synthetic gains based on keyframes: #TODO
-            def cast_gains(k):
-                """
-                sane gains casting rule:
-                    scalar -> 
-                """
-                if _np.isscalar(k):
-                    k = _np.full(dofs, k)
-                else:
-                    k = _np.asarray(k)
-                if k.ndim == 1:
-                    k = _np.diag(k)
-                return k
+        #estimate the covariance tensor. indices are hard-coded for now:
+        model  = _sklearn.covariance.OAS()  #Alternatives: OAS, GraphLasso, EmpiricalCovariance algorithms
+        #for OAS and GraphLasso, normalize the input first to avoid lopsided importance between dofs / realms / derivatives due to differing units
+        stddevs = _np.sqrt(_np.var(tns_learn.tensorData['Wobservations'], axis=0)) + tolerance  #adding tolerance ensure that stddevs never are exactly 0
+        Wsamples_normalized = (tns_learn.tensorData['Wobservations'] - tns_learn.tensorData['Wmean'][:,:,:,:,None]) / stddevs
+        model.fit( Wsamples_normalized.reshape((Wsamples_normalized.shape[0], -1)) ) #flatten tensor to estimate correlations with sklearn
+        covariance_tensor_flat = _np.dot(_np.dot(scale,model.covariance_),scale.T)   #re-scale back to covariances
+        tns_learn.setTensorFromFlattened('Wcov', covariance_tensor_flat) 
+        
+        #for introspection:
+        self.observations = observations
 
-            for syntheticKx, factor, i1, i2 in ((syntheticKp, expectedDuration, iTau, iPos),(syntheticKv, 1.0,  iTau, iVel)):
-                try: 
-                    syntheticKxOrderedDict = _collections.OrderedDict(sorted(syntheticKx.items()))
-                except (AttributeError, TypeError):
-                    syntheticKxOrderedDict=None
-                    
-                if syntheticKxOrderedDict is None:
-                    syntheticKxPerSample = _np.empty((dofs, n))
-                    if _np.isscalar(syntheticKx):
-                        syntheticKx = _np.full((dofs), syntheticKx)
-                    else:
-                        syntheticKx = _np.asarray(syntheticKx)
-                    if syntheticKx.ndim==1:
-                        syntheticKx = _np.diag(syntheticKx)
-                    getDiagView(K[:, i1, :, :, i2, :])[:,:]= -syntheticKx * factor
-                else: #else assume that keyframes have been specified:
-                    syntheticKxKeyframeValue = _np.zeros((len(syntheticKxOrderedDict), dofs, dofs))
-                    syntheticKxKeyframePhases= _np.zeros((len(syntheticKxOrderedDict)))
-                    for i,k in enumerate(syntheticKxOrderedDict):
-                        syntheticKxKeyframePhases[i] = k
-                        syntheticKxKeyframeValue[i,:,:] = cast_gains(syntheticKxOrderedDict[k])
-                    kfp_after  = 1
-                    for i,p in enumerate(synth_phase):
-                        while p >= syntheticKxKeyframePhases[kfp_after] and kfp_after < len(syntheticKxKeyframePhases)-1:
-                            kfp_after +=1
-                        a = (p - syntheticKxKeyframePhases[kfp_after-1]) / (syntheticKxKeyframePhases[kfp_after]-syntheticKxKeyframePhases[kfp_after-1])
-                        a = _np.clip(a, 0.0, 1.0)
-                        interpolated_K = a * syntheticKxKeyframeValue[kfp_after-1,:,:] + (1.0-a) * syntheticKxKeyframeValue[kfp_after,:,:]
-                        K[i, i1, :, i, i2, :] = -interpolated_K * factor
-
-            #complete the K tensor:
-            getDiagView(K)[:,(iPos,iVel),:] = 1
-                            
-            #then synthesize errors and control effort:
-            n_synthetic= ik.dofs_w * ik.supportsCount * sample_multiplier
-            for i in range(n_synthetic):
-                ydelta =  promp_nosynth.sampleTrajectory(synth_phase, synth_phasevel[:,_np.newaxis])
-                ydelta_desired = dot(K, ydelta, shapes=((3,3),(3,0)) )
-#                ydelta_desired[:,iTau,:] += _np.random.normal(scale=1e-2, size=(n,dofs))
-                w = dot(synthAinv, ydelta_desired[:,(iTau, iPos),:], shapes=((2,3),(3,0)) )
-                wSamples.append(w)
-                #if i<20:
-                #    observedTrajectories.append( (synth_phase, (meanTrajectory + ydelta[:,iPos,:].T)/synth_phasevel , (meanTrajectoryVel + ydelta[:,iVel,:].T)/synth_phasevel, (meanTorque + ydelta[:,iTau,:].T)/synth_phasevel ) )
-            
-            wSamples = _np.stack(wSamples)
-            covariancesEstimated = estimateMultivariateGaussianCovariances(wSamples)
-
-        #construct and return the promp with the estimated parameters:
-        promp = ProMP(meansEstimated, covariancesEstimated, ik, name=name, expectedDuration=expectedDuration, phaseVelocityRelativeFloor=phaseVelocityRelativeFloor)
-        #attach trajectory samples to promp:
-        promp.wSamples=wSamples_mean
-        promp.observedTrajectories = observedTrajectories
-        return promp
+        #update yourself to the learnt estimate
+        self.tns.setTensor('Wmean', tns_learn.tensorData['Wmean'], tns_learn.tensorIndices['Wmean'])
+        self.tns.setTensor('Wcov', tns_learn.tensorData['Wcov'], tns_learn.tensorIndices['Wmean'])
 
 
+#    def learnFromTrajectories(self, 
+#        trajectories,
+#        initialVariance=1e-3,
+#        computeMeanFromSubset=None,
+
+#        useSyntheticTorques=True,
+#        syntheticKp=20,
+#        syntheticKv=10,
+#        ):
+#        """
+#        Create a ProMeP from a list of position and torque trajectories
+
+#        name: name string of the new ProMeP (ProMP over motion and effort)
+#        
+#        supportsCount:  how many supports should be used to parameterize the distribution?
+
+#        positionsList: list of arrays of shape (dofs x sampleCount)
+#                The rows are of form [dof0, dof1, dof2,....]
+
+#        velocitiesList: None or list of arrays of shape (dofs x sampleCount)
+#                The rows are of form [dof0, dof1, dof2,....]
+#                
+#                Note: Velocities are not used for learning, but are used for plotting. 
+#                      If None is specified, then plotting infers velocities from the positions and phases
+
+#        torquesList:list of vectors giving the torques of shape (dofs x sampleCount)
+#                The rows are of form [dof0, dof1, dof2,....]
+
+#        phasesList: list of vectors giving the phase for each sample
+#                        if None, position samples are assumed to be equally spaced
+#                        if None, we assume all trajectories to have the same number of samples
+#                    (we assume samples to be sorted by phase)
+#        phaseVelocitiesList: list of vectors giving the phase velocity for each sample
+#                        if None, velocities are set by discrete differention of the phase
+
+#        initialVariance: initial variance to use to regularize the parameter learning. 
+#                            This is especially useful for very small sample sizes to specify a desired minimum variance
+#                            Note: The influence diminishes when increasing the number of samples
+#        
+#        computeMeanFromSubset: If set to a list of indices, use only those trajectory observations for computing the trajectory meanTorque
+#                            This can be used to exclude outlier trajectories, or synthetically generated trajectories that would only add noise
+#                            If None, all provided trajectories will be used to compute the distribution mean
+
+#        expectedDuration: The nominal / expected duration of the ProMP. Used to correctly scale gains during learning, 
+#                          and to plot velocities and gains w.r.t. time instead of phase
+#                            
+#        useSyntheticTorques: If true, create synthetic training data for the covariance matrix by emulating a pd controller on the distribution over motion
+#        syntheticKp, syntheticKv: position and velocity gains of the pd controller, either:
+#                                    - a scalar (use as SISO gain, same value for all dofs)
+#                                    - a vector (use as SISO gain)
+#                                    - arrays of shape (dofs x dofs) (MIMO gains)
+#                                    - a dictionary of keyframes of the above, keyed by phase. I.e. {0.0: [10,20,30], 0.5: [10,0,30], 1.0: [0,0,30]}. 
+#                                      (gains get linearly interpolated, beyond first and last keyframe their respective value is used)
+#        
+#        
+#        syntheticKv:         velocity gain of the pd controller, array of shape (dofs x sampleCount) (you can use numpy casting rules) 
+#                            
+#                            
+#        phaseVelocityRelativeFloor: If set to > 0, clip phase velocity to a minimal value phaseVelocityRelativeFloor * 1.0/(expectedDuration)
+#        """
+#        if len(positionsList) == 0:
+#            raise ValueError("no positions supplied")
+#        dofs = positionsList[0].shape[0]
+#        #todo: check that all trajectories have same dof count
+#        md = _MechanicalStateDistributionDescription(dofs=dofs)
+#        ik = _ik.InterpolationKernelGaussian(md, supportsCount)
+
+#        #compute the pseudoinverse of the array mapping parameter to observed positions / torques:
+#        if phasesList is None:
+#            print("Warning: no phase provided")
+#            if _np.any([ positionsList[0].shape != p.shape for p in positionsList]):
+#                raise ValueError("If no phases are specificed, all trajectories must have the same number of samples!")
+#            phases = _np.linspace(0.0, 1.0, positionsList[0].shape[-1])
+#            if  phaseVelocitiesList is None:
+#                phaseVelocitiesList = [_np.full(phases.shape, 1.0 / len(phases))] #assume dphidt=1.0
+#            AInv = ik.getParameterEstimator(phases)
+#            AInvIterator = _it.repeat(AInv)  #we can reuse the expensive computation for all other trajectories
+#        elif isinstance(phasesList , _np.ndarray):
+#            if _np.any([ positionsList[0].shape != p.shape for p in positionsList]):
+#                raise ValueError("If only one phase vector is specificed, all trajectories must have the same number of samples!")
+#            if  phaseVelocitiesList is None:
+#                raise ValueError("Please provide a phase velocity too")
+#            AInv = ik.getParameterEstimator(phasesList,phaseVelocitiesList)
+#            AInvIterator = _it.repeat(AInv)  #we can reuse the expensive computation for all other trajectories
+#            phasesList = _it.repeat(phasesList)
+#            phaseVelocitiesList = _it.repeat(phaseVelocitiesList)
+#        else:
+#            AInvIterator = [ik.getParameterEstimator(p, dphidt) for p,dphidt in zip(phasesList,phaseVelocitiesList) ]
+#        
+#        #select the subset of trajectories to use for means estimation (i.e. to skip synthetic trajectories)
+#        if computeMeanFromSubset is not None:
+#            useForMeanList = [False] * computeMeanFromSubset[0] + [True] * (computeMeanFromSubset[1]-computeMeanFromSubset[0]) + [False] * (len(positionsList)-computeMeanFromSubset[1])
+#        else:
+#                useForMeanList = _it.repeat(True)
+#        
+#        #compute least-squares estimates for the parameters that generated each trajectory:
+#        wSamples_mean = []
+#        observedTrajectories=[]
+#        if velocitiesList is None:
+#            velocitiesList = _it.repeat(None)
+#            
+#        for pos, vel, tau, phi, dphidt, AInv, useForMean in zip(positionsList, velocitiesList, torquesList, phasesList, phaseVelocitiesList, AInvIterator, useForMeanList):
+#            #estimate mean weights, save observation
+#            if useForMean:
+#                mstate = _np.stack((tau,pos), axis=1)
+#                w = dot(AInv, T(mstate), shapes=((2,3),(3,0)))
+#                wSamples_mean.append(w)
+#            observedTrajectories.append((phi, expectedDuration, pos, vel/dphidt, tau/dphidt ))
+#        wSamples_mean = _np.stack(wSamples_mean)
+#        meansEstimated = estimateMean(wSamples_mean, initialVariance)
+
+#        covariancesEstimated = estimateMultivariateGaussianCovariances(wSamples_mean, 1e-3)
+
+#        if useSyntheticTorques:
+
+#            promp_nosynth = ProMP(0*meansEstimated, covariancesEstimated, ik, name=name)
+
+#            sample_multiplier = 5
+#            sample_multiplier_supports = 5
+#            
+#            #estimate covariance matrix:
+#            wSamples = []
+#            #first, generate a reference mean trajectory:
+#            n = ik.supportsCount * sample_multiplier_supports
+#            dt=1.0/n
+#            meanTrajectory = _np.empty((dofs, n))
+#            meanTrajectoryVel = _np.empty((dofs, n))
+#            meanTorque = _np.empty((dofs, n))
+#            synth_phase = _np.linspace(0.0, 1.0, n)
+#            synth_phasevel = _np.full((n) , 1.0)
+#            iPos = md.mStateNames2Index['position']
+#            iVel = md.mStateNames2Index['velocity']
+#            iTau = md.mStateNames2Index['torque']
+#            
+#            #create mean trajectory for plotting:
+#            for i in range(n):
+#                psi = ik.getPsiTime( synth_phase[i], synth_phasevel[i] )
+#                y = dot(psi, meansEstimated, shapes=((2,2),(2,0)))
+#                meanTrajectory[:,i] = y[iPos, :]
+#                meanTrajectoryVel[:,i] = y[iVel, :]
+#                meanTorque[:,i] = y[iTau, :]
+#            synthAinv, synthA = ik.getParameterEstimator(synth_phase, synth_phasevel, alsoNonInv=True)
+
+#            #create the gains matrix of the PD controller used to create synthetic torques:
+#            K = _np.zeros(( n, md.mechanicalStatesCount, dofs, n, md.mechanicalStatesCount, dofs))
+
+#            #create synthetic gains based on keyframes: #TODO
+#            def cast_gains(k):
+#                """
+#                sane gains casting rule:
+#                    scalar -> 
+#                """
+#                if _np.isscalar(k):
+#                    k = _np.full(dofs, k)
+#                else:
+#                    k = _np.asarray(k)
+#                if k.ndim == 1:
+#                    k = _np.diag(k)
+#                return k
+
+#            for syntheticKx, factor, i1, i2 in ((syntheticKp, expectedDuration, iTau, iPos),(syntheticKv, 1.0,  iTau, iVel)):
+#                try: 
+#                    syntheticKxOrderedDict = _collections.OrderedDict(sorted(syntheticKx.items()))
+#                except (AttributeError, TypeError):
+#                    syntheticKxOrderedDict=None
+#                    
+#                if syntheticKxOrderedDict is None:
+#                    syntheticKxPerSample = _np.empty((dofs, n))
+#                    if _np.isscalar(syntheticKx):
+#                        syntheticKx = _np.full((dofs), syntheticKx)
+#                    else:
+#                        syntheticKx = _np.asarray(syntheticKx)
+#                    if syntheticKx.ndim==1:
+#                        syntheticKx = _np.diag(syntheticKx)
+#                    getDiagView(K[:, i1, :, :, i2, :])[:,:]= -syntheticKx * factor
+#                else: #else assume that keyframes have been specified:
+#                    syntheticKxKeyframeValue = _np.zeros((len(syntheticKxOrderedDict), dofs, dofs))
+#                    syntheticKxKeyframePhases= _np.zeros((len(syntheticKxOrderedDict)))
+#                    for i,k in enumerate(syntheticKxOrderedDict):
+#                        syntheticKxKeyframePhases[i] = k
+#                        syntheticKxKeyframeValue[i,:,:] = cast_gains(syntheticKxOrderedDict[k])
+#                    kfp_after  = 1
+#                    for i,p in enumerate(synth_phase):
+#                        while p >= syntheticKxKeyframePhases[kfp_after] and kfp_after < len(syntheticKxKeyframePhases)-1:
+#                            kfp_after +=1
+#                        a = (p - syntheticKxKeyframePhases[kfp_after-1]) / (syntheticKxKeyframePhases[kfp_after]-syntheticKxKeyframePhases[kfp_after-1])
+#                        a = _np.clip(a, 0.0, 1.0)
+#                        interpolated_K = a * syntheticKxKeyframeValue[kfp_after-1,:,:] + (1.0-a) * syntheticKxKeyframeValue[kfp_after,:,:]
+#                        K[i, i1, :, i, i2, :] = -interpolated_K * factor
+
+#            #complete the K tensor:
+#            getDiagView(K)[:,(iPos,iVel),:] = 1
+#                            
+#            #then synthesize errors and control effort:
+#            n_synthetic= ik.dofs_w * ik.supportsCount * sample_multiplier
+#            for i in range(n_synthetic):
+#                ydelta =  promp_nosynth.sampleTrajectory(synth_phase, synth_phasevel[:,_np.newaxis])
+#                ydelta_desired = dot(K, ydelta, shapes=((3,3),(3,0)) )
+##                ydelta_desired[:,iTau,:] += _np.random.normal(scale=1e-2, size=(n,dofs))
+#                w = dot(synthAinv, ydelta_desired[:,(iTau, iPos),:], shapes=((2,3),(3,0)) )
+#                wSamples.append(w)
+#                #if i<20:
+#                #    observedTrajectories.append( (synth_phase, (meanTrajectory + ydelta[:,iPos,:].T)/synth_phasevel , (meanTrajectoryVel + ydelta[:,iVel,:].T)/synth_phasevel, (meanTorque + ydelta[:,iTau,:].T)/synth_phasevel ) )
+#            
+#            wSamples = _np.stack(wSamples)
+#            covariancesEstimated = estimateMultivariateGaussianCovariances(wSamples)
+
+#        #construct and return the promp with the estimated parameters:
+#        promp = ProMP(meansEstimated, covariancesEstimated, ik, name=name, expectedDuration=expectedDuration, phaseVelocityRelativeFloor=phaseVelocityRelativeFloor)
+#        #attach trajectory samples to promp:
+#        promp.wSamples=wSamples_mean
+#        promp.observedTrajectories = observedTrajectories
+#        return promp
 
 
+
+
+
+
+
+#def estimateMean(wSamples, initialVariance, tolerance=1e-7):
+#    nSamples = wSamples.shape[0]
+#    wsamples_flat = _np.reshape(wSamples, (nSamples,-1) )  
+#    means_flat = _np.mean(wsamples_flat, axis=0)
+#    means = means_flat.reshape(wSamples.shape[1], wSamples.shape[2])
+#    return means
+
+#def estimateMultivariateGaussianCovariances(wSamples, initialVariance=None, tolerance=1e-7):
+#    """
+#    estimate the values of a multivariate gaussian distribution
+#    from the given set of samples
+
+#    wSamples: array of size (n, i1, i2) with n=number of samples
+
+#    initialVariance: initial variance to use as regularization when using few samples
+
+#    returns: (means, covarianceTensor)
+#        means: matrix of shape (i1, i2)
+#        covarianceTensor: array of shape (i1, i2, i2, i1)
+#    """
+#    nSamples = wSamples.shape[0]
+#    wsamples_flat = _np.reshape(wSamples, (nSamples,-1) )  
+#    means_flat = _np.mean(wsamples_flat, axis=0)
+#    deviations_flat = _np.sqrt(_np.var(wsamples_flat, axis=0))
+#    deviations_regularized = _np.clip(deviations_flat, tolerance, _np.inf)
+#    wsamples_flat_normalized = (wsamples_flat - means_flat) / deviations_regularized
+#    tensorshape =  (wSamples.shape[1], wSamples.shape[2], wSamples.shape[1], wSamples.shape[2])
+#    
+#    #use sklearn for more sophisticated covariance estimators:
+#    model  = _sklearncovariance.OAS()  #Alternatives: OAS, GraphLasso , EmpiricalCovariance
+#    model.fit(wsamples_flat_normalized)
+#    correlationMatrix = model.covariance_.copy()
+#    assertCovTensorIsWellFormed(correlationMatrix.reshape(tensorshape), tolerance)    
+
+#    scale = _np.diag(deviations_regularized)
+#    covarianceTensor = _np.dot(_np.dot(scale,correlationMatrix),scale.T) 
+#    covarianceTensor = 0.5*(covarianceTensor + covarianceTensor.T) #ensure symmetry in face of numeric deviations
+#    if initialVariance is not None:
+#        covarianceTensor += (_np.eye(wSamples.shape[1]*wSamples.shape[2])*initialVariance - covarianceTensor) * (1./(nSamples+1))
+#    covarianceTensor.shape = tensorshape
+#    assertCovTensorIsWellFormed(covarianceTensor, tolerance)
+#    return covarianceTensor
+
+
+#def assertCovTensorIsWellFormed(covarianceTensor, tolerance):
+#        covarianceMatrix = flattenCovarianceTensor(covarianceTensor)
+#        if _np.any( _np.abs(covarianceMatrix.T - covarianceMatrix) > tolerance):
+#            raise RuntimeWarning("Notice: Covariance Matrix is not symmetric. This usually is an error")
+#        #test the cov matrix of each dof individually to better pinpoint errors:
+#        for i in range(covarianceTensor.shape[1]):
+#            try:
+#                _np.linalg.cholesky(covarianceTensor[:,i,:,i])  #will fail if matrix is not positive-semidefinite
+#            except _np.linalg.linalg.LinAlgError:
+#                eigenvals = _np.linalg.eigvals(covarianceTensor[:,i,:,i])
+#                raise RuntimeWarning("Notice: Covariance Matrix of dof {0} is not positive semi-definite. This usually is an error.\n Eigenvalues: {1}".format(i, eigenvals))
+#        #test complete tensor, i.e. also across dofs:
+#        try:
+#            _np.linalg.cholesky(covarianceMatrix)  #will fail if matrix is not positive-semidefinite
+#        except _np.linalg.linalg.LinAlgError:
+#            eigenvals = _np.linalg.eigvals(covarianceMatrix)
+#            raise RuntimeWarning("Notice: Covariance tensor is not positive semi-definite. This usually is an error.\n Eigenvalues of flattened tensor: {1}".format(i, eigenvals))
 
