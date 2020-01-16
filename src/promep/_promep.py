@@ -20,10 +20,12 @@ import os as _os
 import matplotlib.pyplot as _plt
 import matplotlib as _mpl
 import pprint as  _pprint
+import multiprocessing as _multiprocessing
+import random as _random
 
 from promep import *
 
-from . import _namedtensors, _interpolationkernels, _mechanicalstate, _taskspaces
+from . import _namedtensors, _interpolationkernels, _mechanicalstate, _taskspaces, _kumaraswamy
 
 from  scipy.special import betainc as _betainc
 from sklearn import covariance as _sklearncovariance
@@ -121,7 +123,7 @@ class ProMeP(object):
                         
                         When tauDerivativesCount = 1, then the object describes a joint distribution over position, velocity AND force
             
-            expectedDuration: time the promp is expected to execute in. Use it for scaling plots and general debugging of learning
+            expected_duration: time the promp is expected to execute in. Use it for scaling plots and general debugging of learning
                         
         """
         self.name = name
@@ -165,6 +167,31 @@ class ProMeP(object):
             else:
                   self.tns.registerIndex(name, self.index_sizes[name], values = list(range(self.index_sizes[name])))
 
+        #human-readable names for (realm, derivative) index combinations:
+        motion_names = ('position', 'velocity', 'acceleration', 'jerk')
+        effort_names = ('int_int_torque', 'impulse', 'torque', 'torque_rate')
+        if self.index_sizes['g'] < 3:   #if less than 3 derivatives are computed, make sure that torque stays represented:
+            self.gtilde_effort_shiftvalue = 3-self.index_sizes['g'] #remember by how much gtilde for effort is shifted
+            effort_names = effort_names[self.gtilde_effort_shiftvalue:]
+        else:
+            self.gtilde_effort_shiftvalue = 0
+
+        #set up translation dict from human-readable names to indices used within the promep data structures:
+        d={}
+        self._gain_names = set()
+        for g_idx in range(self.index_sizes['g']):
+            d[motion_names[g_idx]] = (0,g_idx)
+            d[effort_names[g_idx]] = (1,g_idx)
+        if 'torque' in d and 'position' in d:
+            d['kp'] = (d['torque'][1], d['position'][1])  #gains get the derivative indices of effort&motion
+            self._gain_names.add('kp')
+        if 'torque' in d and 'velocity' in d:
+            d['kv'] = (d['torque'][1], d['velocity'][1])
+            self._gain_names.add('kv')
+        self.readable_names_to_realm_derivative_indices = d
+
+        _pprint.pprint(self.readable_names_to_realm_derivative_indices)
+
 
         self.PHI_computer = PHI_computer_cls(self.tns)   
                   
@@ -206,13 +233,16 @@ class ProMeP(object):
         self.timeAssociable = False #indicate that this motion generator is not parameterizable by time
         self.tolerance=1e-7
         
-        self.expectedDuration = expected_duration
+        self.expected_duration = expected_duration
 
         self.tns.setTensor('Wmean', Wmean)
         self.tns.setTensor('Wcov', Wcov)
         
         #temporary/scratch tensors:
         self.tns.registerTensor('Wsample', (('r','gtilde','stilde','dtilde'),()) )
+
+        #some initial plot range values so we can plot something at all
+        self.plot_range_guesses = { 'torque': [-20,20], 'position': [-1.5,1.5], 'velocity': [-2.0,2.0], 'gains': [-10,100.0],}
         
 
     def __repr__(self):
@@ -240,7 +270,7 @@ class ProMeP(object):
         serializedDict[u'index_sizes'] = {key: self.tns.indexSizes[key] for key in self.tns.indexSizes if not key.endswith('_')}
         serializedDict[u'Wmean'] = self.tns.tensorData['Wmean']
         serializedDict[u'Wcov'] = self.tns.tensorData['Wcov']
-        serializedDict[u'expected_duration'] = self.expectedDuration
+        serializedDict[u'expected_duration'] = self.expected_duration
         return serializedDict
 
 
@@ -422,14 +452,14 @@ meansMatrix
 
 
     def plot(self, dofs='all',
-                   whatToPlot=['position', 'velocity', 'gains', 'torque'],
-                   num=100,
+                   whatToPlot=['position', 'velocity', 'kp', 'kv', 'impulse', 'torque'],
+                   num=101,
                    linewidth=0.5,
                    addExampleTrajectories=10,
                    withConfidenceInterval=True,
-                   plotRanges = { 'torque': [-20,20], 'position': [-1.5,1.5], 'velocity': [-2.0,2.0], 'gains': [-10,100.0],},
+                   plotRanges = None,
                    exampleTrajectoryStyleCycler=_plt.cycler('color', ['#6666FF']),
-                   scaleToExpectedDuration=True,
+                   useTime=True,
                    ):
         """
         visualize the trajectory distribution as parameterized by the means of each via point,
@@ -452,34 +482,47 @@ meansMatrix
         kvCrossColor = '#88FF88'
 
         phases = _np.zeros((num, self.tns.indexSizes['gphi']))
-        phases[:,0] = _np.linspace(0.0, 1.0, num)
+        
+        if useTime: 
+            times = _np.linspace(0, self.expected_duration, num)     
+            phases[:,0] = _kumaraswamy.cdf(2, 2, _np.linspace(0,1.0,num))
+            plot_x = times
+        else:
+            phases[:,0] = _np.linspace(0.0, 1.0, num)
+            plot_x = phases[:,0]
+            
         if self.tns.indexSizes['gphi'] > 1:
-            if scaleToExpectedDuration:
-                phases[:,1] = 1.0/self.expectedDuration
+            if useTime:
+                phases[:,1] = 1.0/self.expected_duration
             else:
                 phases[:,1] = 1.0
 
-        if scaleToExpectedDuration:
+        if useTime:
             units={
-                'impulse rate': '[Nms]',
+                'impulse': '[Nms]',
                 'torque': '[Nm]',
                 'position': '[rad]',
                 'velocity': '[rad/s]',
                 'acceleration': '[rad/s^2]',
-                'gains': '[Nm/rad], [Nm/rad/s]',
+                'kp': '[Nm/rad]',
+                'kv': '[Nm/rad/s]',
             }
         else:
             units={
-                'impulse rate': '[Nms/1]',
+                'impulse': '[Nms/1]',
                 'torque': '[Nm]',
                 'position': '[rad]',
                 'velocity': '[rad/1]',
                 'acceleration': '[rad/1^2]',
-                'gains': '[Nm/rad], [Nm/rad/1]',
+                'kp': '[Nm/rad]',
+                'kv': '[Nm/rad/1]',
             }
+        
+        whatToPlot = [name for name in whatToPlot if name in self.readable_names_to_realm_derivative_indices ]
 
-        iMotion = self.tns.indexValues['r'].index('motion')
-        iEffort = self.tns.indexValues['r'].index('effort')
+        if plotRanges is None:
+            plotRanges = self.plot_range_guesses   
+        #e.g. { 'torque': [-20,20], 'position': [-1.5,1.5], 'velocity': [-2.0,2.0], 'gains': [-10,100.0],}
 
         if dofs=='all' or dofs == None:
             if self.tns.indexValues['d'] != None:
@@ -489,41 +532,36 @@ meansMatrix
         else:
             dofs_to_plot = dofs
         subplotfigsize=2.0
-        plotrownames2indexvalues={
-            'impulse': [1,1],
-            'torque': [1,2],
-            'position': [0,0],
-            'velocity': [0,1],
-            'acceleration': [0,2],
-            'gains': None,
-        }
 
         plotrows = len(whatToPlot)
-
         #make an array with plot limits:
         limits=_np.zeros((plotrows, 2))
-        limits[:,1]=0.01
         for row_idx, plotrowname in enumerate(whatToPlot):
-            limits[row_idx,0] = plotRanges[plotrowname][0]
-            limits[row_idx,1] = plotRanges[plotrowname][1]
-        
+            if plotRanges is not None and plotrowname in plotRanges:
+                limits[row_idx,0] = plotRanges[plotrowname][0]
+                limits[row_idx,1] = plotRanges[plotrowname][1]
+            else:
+                limits[row_idx,0] = -0.1
+                limits[row_idx,1] = 0.1
             
         #gather the data:
         data_mean  = _np.zeros((num,plotrows, self.tns.indexSizes['d']))
         data_sigma = _np.zeros((num,plotrows, self.tns.indexSizes['d']))
-        data_gains = _np.zeros((num,self.tns.indexSizes['d'],2, self.tns.indexSizes['d']))
-
+        data_gains = {
+            'kp': _np.zeros((num,self.tns.indexSizes['d'], self.tns.indexSizes['d'])),
+            'kv': _np.zeros((num,self.tns.indexSizes['d'], self.tns.indexSizes['d'])),
+        }
         generalized_phase =_np.zeros((self.tns.indexSizes['g']))            
         for i,phase in enumerate(phases):
             dist =  self.getDistribution(phase)
             for row_idx, rowname in enumerate(whatToPlot):
-                if rowname == 'gains':
+                if rowname in data_gains:
                     gains  = dist.extractPDGains()
-                    data_gains[i,:,0,:] = gains[:,2,:,0]
-                    data_gains[i,:,1,:] = gains[:,2,:,1]
+                    g_idx, g2_idx = self.readable_names_to_realm_derivative_indices[rowname]
+                    data_gains[rowname][i,:,:] = gains[:,g_idx,:,g2_idx]
                 else:                
-                    r_idx, g_idx = plotrownames2indexvalues[rowname]                
-                    data_mean[i,row_idx,:] = dist.means[r_idx,:,g_idx]
+                    r_idx, g_idx = self.readable_names_to_realm_derivative_indices[rowname]                
+                    data_mean[i,row_idx,:] = dist.means[r_idx,:,g_idx] 
                     data_sigma[i,row_idx,:] = _np.sqrt( dist.variancesView[r_idx,:,g_idx] )
 
         fig, axesArray = _plt.subplots(plotrows,len(dofs_to_plot), squeeze=False, figsize=(max(len(dofs_to_plot), plotrows)*subplotfigsize, plotrows*subplotfigsize), sharex='all', sharey='row')
@@ -532,25 +570,24 @@ meansMatrix
         #plot the zero-variance trajectory + 95% confidence interval        
         for row_idx, row_name in enumerate(whatToPlot):
             for col_idx, dof in enumerate(dofs_to_plot):
-                if row_name == 'gains': #no confidence intervals possible here
-                    limits[row_idx,0] = min(limits[row_idx,0], _np.min(data_gains))
-                    limits[row_idx,1] = max(limits[row_idx,1], _np.max(data_gains))
+                if rowname in data_gains:
+                    limits[row_idx,0] = min(limits[row_idx,0], _np.min(data_gains[rowname]))
+                    limits[row_idx,1] = max(limits[row_idx,1], _np.max(data_gains[rowname]))
                     axesArray[row_idx,col_idx].axhline(0.0, label=None,  color=(0.4,0.4,0.4), linestyle=':')
                     for col_idx2, dof2 in enumerate(dofs_to_plot):
                         if dof != dof2:
-                            axesArray[row_idx,col_idx].plot(phases[:,0],data_gains[:,dof,0,dof2], label=None,  color=kpCrossColor, linestyle=':')
-                            axesArray[row_idx,col_idx].plot(phases[:,0],data_gains[:,dof,1,dof2], label=None,  color=kvCrossColor, linestyle=':')
+                            axesArray[row_idx,col_idx].plot(plot_x,data_gains[rowname][:,dof,dof2], label=None,  color=kpCrossColor, linestyle=':')
                     #plot the joint-local gains prominently, and on top (i.e. last)
-                    axesArray[row_idx,col_idx].plot(phases[:,0],data_gains[:,dof,0,dof], label="gain kp",  color=kpColor)
-                    axesArray[row_idx,col_idx].plot(phases[:,0],data_gains[:,dof,1,dof], label="gain kv",  color=kvColor)
+                    axesArray[row_idx,col_idx].plot(plot_x,data_gains[rowname][:,dof,dof], label=rowname,  color=kpColor)
+                    
                 else:
                     meanvalues = data_mean[:,row_idx,dof]
                     sigmavalues = data_sigma[:,row_idx,dof]
                     upper_boundary = meanvalues+1.96*sigmavalues
                     lower_boundary = meanvalues-1.96*sigmavalues
                     if withConfidenceInterval:
-                        axesArray[row_idx,col_idx].fill_between(phases[:,0],lower_boundary, upper_boundary, label="95%",  color=confidenceColor)
-                    axesArray[row_idx,col_idx].plot(phases[:,0],meanvalues, label="mean",  color=meansColor)
+                        axesArray[row_idx,col_idx].fill_between(plot_x,lower_boundary, upper_boundary, label="95%",  color=confidenceColor)
+                    axesArray[row_idx,col_idx].plot(plot_x,meanvalues, label="mean",  color=meansColor)
 
                     #update limits:
                     ymin = _np.min(lower_boundary)
@@ -570,64 +607,50 @@ meansMatrix
         for j in range(addExampleTrajectories):
             yvalues = self.sampleTrajectory(phases)
             #update the desired plotting limits:
-            for m, rowname in enumerate(whatToPlot):
-                if rowname == 'gains':
+            for row_idx, rowname in enumerate(whatToPlot):
+                if rowname in self._gain_names:
                     continue
-                r_idx, g_idx = plotrownames2indexvalues[rowname]
+                r_idx, g_idx = self.readable_names_to_realm_derivative_indices[rowname]
                 ymin = _np.min(yvalues[:,r_idx,:,g_idx])
                 ymax = _np.max(yvalues[:,r_idx,:,g_idx])
                 limits[row_idx,0] = min(limits[row_idx,0],ymin)
                 limits[row_idx,1] = max(limits[row_idx,1],ymax)
                 for i, dof in enumerate(dofs_to_plot):
-                    axesArray[row_idx,col_idx].plot(phases[:,0], yvalues[:,r_idx,dof,g_idx], alpha=alpha, linewidth=linewidth )
-
+                    axesArray[row_idx,col_idx].plot(plot_x, yvalues[:,r_idx,dof,g_idx], alpha=alpha, linewidth=linewidth )
+        largest_observed_time = plot_x[-1]
         if 'observedTrajectories' in self.__dict__:
-            for traj in self.observedTrajectories:
-                phase, duration, posvalues, velvalues, tauvalues = traj
-
-                if scaleToExpectedDuration:
-                    times = phases[:,0] * self.expectedDuration
-                    dcdt = 1.0 / self.expectedDuration
-                else:
-                    times = phases[:,0] * 1.0
-                    dcdt = 1.0
-                    
-                #compute values for velocity plots:
-                if velvalues is None: #compute velocities from the positions if they are not specified
-                    d_posvalues = (posvalues[:,1:] - posvalues[:,:-1]) / (phases[1:,0] - phases[:-1,0]) * dcdt
-                else:
-                    d_posvalues = (velvalues[:,1:]+velvalues[:,1:])* 0.5* dcdt
-                d_phasevalues = 0.5* (phases[1:,0]+phases[:-1,0])
-
-                data = {
-                    'position': [times, posvalues],
-                    'velocity': [d_phasevalues, d_posvalues],
-                    'torque':   [times, tauvalues]
-                }
-                
-
+            for observation_idx, (times, phases_observation, values, Xrefs, Yrefs, Ts) in enumerate(self.observedTrajectories):        
                 for row_idx, rowname in enumerate(whatToPlot):
-                    r_idx, g_idx = plotrownames2indexvalues[rowname]
-                    x,y = data[rowname]
-                    ymin = _np.min(y[:,r_idx,g_idx,:])
-                    ymax = _np.max(y[:,r_idx,g_idx,:])
-                    limits[row_idx,0] = min(limits[row_idx,0],ymin)
-                    limits[row_idx,1] = max(limits[row_idx,1],ymax)
+                    if rowname in self._gain_names:
+                        continue
+                    r_idx, g_idx = self.readable_names_to_realm_derivative_indices[rowname]
+                    if useTime:
+                        y = values[:,r_idx,:,g_idx]
+                        for col_idx, dof in enumerate(dofs_to_plot):
+                            axesArray[ row_idx, col_idx].plot(times, y[:,dof], alpha=alpha, linewidth=linewidth, color=observedColor )
+                    else:
+                        if g_idx == 1:
+                            y = values[:,r_idx,:,g_idx] #/ phases_observation[:,1]
+                        else:
+                            y = values[:,r_idx,:,g_idx] 
+                        for col_idx, dof in enumerate(dofs_to_plot):
+                            axesArray[ row_idx, col_idx].plot(phases_observation[:,0], y[:,dof], alpha=alpha, linewidth=linewidth, color=observedColor )
 
-                    for i, dof in enumerate(dofs):
-                        axesArray[ m, i].plot(x, y[dof,:], alpha=alpha, linewidth=linewidth, color=observedColor )
+            largest_observed_time = max(largest_observed_time,  _np.max([ tup[0] for tup in self.observedTrajectories]))
 
         limit_padding=0.05
         for col_idx, dof in enumerate(dofs_to_plot):
             for row_idx, rowname in enumerate(whatToPlot):
                 axes = axesArray[row_idx,col_idx]  
                 axes.set_title(r"{0} {1}".format(rowname, dof))
-                axes.set_xlim((0.0, 1.0))
                 if row_idx == plotrows-1: #last row?
-                    axes.set_xticks([0.0,0.5, 1.0])
-                    if scaleToExpectedDuration:
-                        axes.set_xticklabels(['0', 'time [s]', '{0:0.1f}'.format(self.expectedDuration)])
+                    if useTime:
+                        axes.set_xlim(plot_x[0],largest_observed_time)
+                        axes.set_xticks( [ 0.0, 0.5*plot_x[-1], plot_x[-1] ] )
+                        axes.set_xticklabels(['0', 'time [s]', '{0:0.1f}'.format(plot_x[-1])])
                     else:
+                        axes.set_xlim(0,1.0)
+                        axes.set_xticks([0.0,0.5, 1.0])
                         axes.set_xticklabels(['0', 'phase', '1'])
                 else:
                     axes.get_xaxis().set_visible(False)
@@ -635,13 +658,8 @@ meansMatrix
                     axes.set_ylabel(units[rowname])
                 else:
                     axes.get_yaxis().set_visible(False)
-                lim = limits[row_idx,:]
-                avg = _np.mean(lim)
-                delta = max(0.5*(lim[1]-lim[0]), 0.1*abs(avg))
-                ymax = avg+delta*(1+limit_padding)
-                ymin = avg-delta*(1+limit_padding)
-#                axes.set_ylim(ymin,ymax )
-                axes.set_ylim(plotRanges[rowname][0],plotRanges[rowname][1])
+                delta = (limits[row_idx,1] - limits[row_idx,0])* limit_padding
+                #axes.set_ylim(limits[row_idx,0]-delta,limits[row_idx,1]+delta)
         _plt.tight_layout()
         return fig
 
@@ -711,14 +729,14 @@ meansMatrix
     def learnFromObservations(self, 
             observations, 
             useOnly=((0,0),(1,2)),  
-            max_iterations=500, 
-            minimal_relative_improvement=0.0001,
+            max_iterations=150, 
+            minimal_relative_improvement=1e-3,
             ):
         """
         
         compute parameters from a list of observations
         
-        Observations are tuples of (phases, values, Xrefs, Yrefs) tensors (data arrays)
+        Observations are tuples of (times, phases, values, Xrefs, Yrefs) tensors (data arrays)
         
         phases: Generalized phases of shape (n, 'd')
         means: observed values at the given phases, of shape (n, 'd', 'g')
@@ -731,24 +749,19 @@ meansMatrix
        
         Implements the expectation-maximization procedure of the paper "Using probabilistic movement primitives in robotics" by Paraschos et al.
         """
+        pool = _multiprocessing.Pool(8)        
         
         # set up computation of PSIhatInv = (PSIhat)^-1 = (Yref - (Yrefhat - T:Xrefhat) )^-1
+
         tns_learn = _namedtensors.TensorNameSpace(self.tns)
         self.tns_learn =tns_learn
-        tns_learn.registerIndex('observations', len(observations))
-        tns_learn.registerIndex('samples', tns_learn.indexSizes['stilde']*10)
         
         #tensors to do EM on:
         tns_learn.registerTensor('Wmean', (['rtilde', 'gtilde', 'stilde', 'dtilde'], ()) )
-        tns_learn.registerTensor('Wcov', (['rtilde', 'gtilde', 'stilde','dtilde'], ['rtilde_', 'gtilde_', 'stilde_','dtilde_'],) )
-
-        
-        #tensors to aggregate increments for maximization:
-        tns_learn.registerTensor('sumWcov', (['rtilde', 'gtilde', 'stilde','dtilde'], ['rtilde_', 'gtilde_', 'stilde_','dtilde_'],) )
-        tns_learn.registerTensor('sumWmean', (['rtilde', 'gtilde', 'stilde', 'dtilde'], ()) )
+        tns_learn.registerTensor('Wcov', (['rtilde', 'gtilde', 'stilde','dtilde'], ['rtilde_', 'gtilde_', 'stilde_','dtilde_'],) )        
                 
         #compute the precision matrix in Y space for a current sample i:
-        tns_learn.registerTensor('PSIi', (['r', 'd', 'g'], ['rtilde', 'gtilde', 'stilde','dtilde']))
+        tns_learn.registerTensor('PSIi', self.tns.tensorIndices['PSI'])
         tns_learn.registerTranspose('PSIi')
         tns_learn.registerContraction('PSIi', 'Wcov')
         tns_learn.registerContraction('PSIi:Wcov', '(PSIi)^T')
@@ -773,14 +786,14 @@ meansMatrix
         tns_learn.registerContraction('(PSIi:Wcov)^T:Yiprecision', 'PSIi:Wcov', result_name='Wcovidelta')
         tns_learn.registerSubtraction('Wcov', 'Wcovidelta', result_name= 'Wcovi')
 
-        first_part_steps = len(tns_learn.update_order)  #when computing, stop here and add Wmeani and Wcovi to sumWmean and sumWcov
+        first_part_steps = len(tns_learn.update_order)  #when computing, stop here for averaging over all computed Wmeani
 
         #this is done separately, after Wmean has been updated:  
         tns_learn.registerSubtraction('Wmeani', 'Wmean')      
         tns_learn.registerTranspose('(Wmeani-Wmean)')  
         tns_learn.registerContraction('(Wmeani-Wmean)', '((Wmeani-Wmean))^T', result_name='Wcoviempirical')
     
-        _pprint.pprint(tns_learn.tensorIndices)
+        #_pprint.pprint(tns_learn.tensorIndices)
        
     
         iteration_count = 0 #maximum number of E-M iterations
@@ -788,11 +801,12 @@ meansMatrix
         tns_learn.setTensorToIdentity('Wcov', scale=0.1) #set the prior
         tns_learn.setTensor('Wmean', 0.0) #set the prior  
       
-        
+        #set update() to not know the second part:
+        tns_learn.update_order = tns_learn.update_order[:first_part_steps]
 
         #preprocess observations into pairs of Yi and PSIi
-        psi_y_list = []
-        for observation_idx, (phases, values, Xrefs, Yrefs, Ts) in enumerate(observations):
+        estimation_parameters = []
+        for observation_idx, (times, phases, values, Xrefs, Yrefs, Ts) in enumerate(observations):
             num = phases.shape[0]
             for n in range(num):
                 #compute PSIi:
@@ -805,59 +819,65 @@ meansMatrix
                 #compute PSI only:
                 self.tns.update('P:PHI', 'PSI', 'O')
                 ydelta = values[n,:,:,:] #- self.tns.tensorData['O']
-                psi_y_list.append( ( self.tns.tensorData['PSI'].copy(), ydelta) ) #saving a view is enough
+                estimation_parameters.append( (tns_learn, tns_learn.tensorData['Wmean'], tns_learn.tensorData['Wcov'], self.tns.tensorData['PSI'].copy(), ydelta) ) #saving a view is enough
 
         relative_improvement = 1.0
+        global _tnscopy_perprocess
+        _tnscopy_perprocess.clear()
+        relative_changes = 1.0
         while iteration_count < max_iterations:
             iteration_count = iteration_count+1        
-            Wmeani_list = []
-            tns_learn.setTensor('sumWmean', 0.0)
-            tns_learn.setTensor('sumWcov', 0.0)
-            negLL.append(0.0)
-            for observation_idx, (PSIi, Ydeltai) in enumerate(psi_y_list):
-                    tns_learn.setTensor('PSIi', PSIi, arrayIndices=self.tns.tensorIndices['PSI'])
-                    #set the observed sample:
-                    tns_learn.setTensor('Yi', Ydeltai, arrayIndices= (('r', 'd', 'g'),()))
-                    #compute the estimation step:
-                    #tns_learn.update()
-                    tns_learn.update(*tns_learn.update_order[:first_part_steps])
-                    #print(tns_learn.tensorData['Wmeani'])
-                    #aggregate contributions for M-step:
-                    tns_learn.addToTensor('sumWmean', tns_learn.tensorData['Wmeani'], tns_learn.tensorIndices['Wmeani'])
-                    tns_learn.addToTensor('sumWcov', tns_learn.tensorData['Wcovi'], tns_learn.tensorIndices['Wcovi'])
-                    Wmeani_list.append( tns_learn.tensorData['Wmeani'].copy() ) #remember for M-step
-                    negLL[-1] = negLL[-1] + tns_learn.tensorData['negLLidelta'] #aggregate negative log-likelihood total
+            
+            #if we have many data points, and changes are still big, select a subset to speed up iteration:
+            if  len(estimation_parameters) > 0.2*tns_learn.tensorData['Wcov'].size and relative_changes > 0.1:
+                subset = [ _random.choice(estimation_parameters) for i in range(tns_learn.tensorData['Wcov'].size//5)]
+                stabilize = max(0.5, ((1.0*iteration_count) / max_iterations))
+            else: 
+                subset = estimation_parameters
+                stabilize = max(0.05, ((1.0*iteration_count) / max_iterations)-0.5)
+                
+            estimates = pool.starmap(_estimation_func, subset)
+            #estimates = list(_it.starmap(_estimation_func, subset)) #non-parallel version
             
             #do maximization step for means:
-            stabilize = (float(iteration_count) / max_iterations)**2
-            Wmean_prime = (1.0-stabilize) * _np.mean(Wmeani_list, axis=0) + stabilize * tns_learn.tensorData['Wmean']
+            Wmean_prime = (1.0-stabilize) * _np.mean([e[0] for e in estimates], axis=0) + stabilize * tns_learn.tensorData['Wmean']
             tns_learn.setTensor('Wmean', Wmean_prime )
             #do maximization step for covariances, using Wmean_prime
-            sumWcov = tns_learn.tensorData['sumWcov'].copy()
-            for Wmeani in Wmeani_list:
+            negLLDeltaSum = 0.0
+            sumWcov = 0.0          
+            for Wmeani, Wcovi, negLLdelta in estimates:
                 tns_learn.setTensor('Wmeani', Wmeani)
                 tns_learn.update('(Wmeani-Wmean)','((Wmeani-Wmean))^T','Wcoviempirical')
-                tns_learn.addToTensor('sumWcov', tns_learn.tensorData['Wcoviempirical'], tns_learn.tensorIndices['Wcoviempirical'])
-            Wcov_prime = (1.0-stabilize) * tns_learn.tensorData['sumWcov'] * (1.0/len(Wmeani_list)) + stabilize * tns_learn.tensorData['Wcov']
-            tns_learn.setTensor('Wcov', Wcov_prime, tns_learn.tensorIndices['sumWcov'] )
-            #re-symmetrize:
+                sumWcov = sumWcov + Wcovi + tns_learn.tensorData['Wcoviempirical']
+                negLLDeltaSum += negLLdelta
+            Wcov_prime = (1.0-stabilize) * sumWcov * (1.0/len(subset)) + stabilize * tns_learn.tensorData['Wcov']
+            tns_learn.setTensor('Wcov', Wcov_prime, tns_learn.tensorIndices['Wcoviempirical'] )
+            #re-symmetrize to make iteration numerically stable:
             tns_learn.tensorDataAsFlattened['Wcov'][:,:] = 0.5*tns_learn.tensorDataAsFlattened['Wcov'] + 0.5* tns_learn.tensorDataAsFlattened['Wcov'].T
+            negLL.append(negLLDeltaSum / len(subset))
+            
             #terminate early if neg-log-likelihood of observations stops increasing:
             n= 4
             if len(negLL) > n:
-                relative_changes = [ abs(negLL[-i]-negLL[-i-1]/negLL[-i-1]) for i in range(1,n) ]
-                #print(relative_improvement)
-                print(negLL[-1])
-                print(_np.linalg.eigvals(tns_learn.tensorDataAsFlattened['Wcov']))
+                relative_changes = [ abs((negLL[-i]-negLL[-i-1])/negLL[-i-1]) for i in range(1,n) ]
+                eigenvalues = _np.linalg.eigvals(tns_learn.tensorDataAsFlattened['Wcov'])
+                if _np.any(_np.iscomplex(eigenvalues)) or _np.any(eigenvalues < 0.0):                    
+                    print("Warning: At iteration {} eigenvalues became {} ".format(iteration_count, eigenvalues))
                 #print(_np.diag(tns_learn.tensorDataAsFlattened['Wcov']))
-                print(tns_learn.tensorData['Wmean'])
-                if max(relative_changes) < minimal_relative_improvement:
+                #print(tns_learn.tensorData['Wmean'])
+                print("{:.4}".format(relative_changes[0]))
+                relative_changes = max(relative_changes)
+                if relative_changes < minimal_relative_improvement:
+                    print("stopping early at iteration {}".format(iteration_count))
                     break
+                    
         self.negLL = _np.array(negLL)
         #update yourself to the learnt estimate
         self.tns.setTensor('Wmean', tns_learn.tensorData['Wmean'], tns_learn.tensorIndices['Wmean'])
         self.tns.setTensor('Wcov', tns_learn.tensorData['Wcov'], tns_learn.tensorIndices['Wcov'])
+        self.expected_duration = _np.mean([times[-1] for(times, phases, values, Xrefs, Yrefs, Ts) in observations])
 
+        self.observedTrajectories = observations #remember the data we learned from, for plotting etc.
 
 
     def learnFromObservationsUsingLinReg(self, observations, useOnly=((0,0),(1,2)) ):
@@ -944,285 +964,25 @@ meansMatrix
         self.tns.setTensor('Wcov', tns_learn.tensorData['Wcov'], tns_learn.tensorIndices['Wmean'])
 
 
-#    def learnFromTrajectories(self, 
-#        trajectories,
-#        initialVariance=1e-3,
-#        computeMeanFromSubset=None,
-
-#        useSyntheticTorques=True,
-#        syntheticKp=20,
-#        syntheticKv=10,
-#        ):
-#        """
-#        Create a ProMeP from a list of position and torque trajectories
-
-#        name: name string of the new ProMeP (ProMP over motion and effort)
-#        
-#        supportsCount:  how many supports should be used to parameterize the distribution?
-
-#        positionsList: list of arrays of shape (dofs x sampleCount)
-#                The rows are of form [dof0, dof1, dof2,....]
-
-#        velocitiesList: None or list of arrays of shape (dofs x sampleCount)
-#                The rows are of form [dof0, dof1, dof2,....]
-#                
-#                Note: Velocities are not used for learning, but are used for plotting. 
-#                      If None is specified, then plotting infers velocities from the positions and phases
-
-#        torquesList:list of vectors giving the torques of shape (dofs x sampleCount)
-#                The rows are of form [dof0, dof1, dof2,....]
-
-#        phasesList: list of vectors giving the phase for each sample
-#                        if None, position samples are assumed to be equally spaced
-#                        if None, we assume all trajectories to have the same number of samples
-#                    (we assume samples to be sorted by phase)
-#        phaseVelocitiesList: list of vectors giving the phase velocity for each sample
-#                        if None, velocities are set by discrete differention of the phase
-
-#        initialVariance: initial variance to use to regularize the parameter learning. 
-#                            This is especially useful for very small sample sizes to specify a desired minimum variance
-#                            Note: The influence diminishes when increasing the number of samples
-#        
-#        computeMeanFromSubset: If set to a list of indices, use only those trajectory observations for computing the trajectory meanTorque
-#                            This can be used to exclude outlier trajectories, or synthetically generated trajectories that would only add noise
-#                            If None, all provided trajectories will be used to compute the distribution mean
-
-#        expectedDuration: The nominal / expected duration of the ProMP. Used to correctly scale gains during learning, 
-#                          and to plot velocities and gains w.r.t. time instead of phase
-#                            
-#        useSyntheticTorques: If true, create synthetic training data for the covariance matrix by emulating a pd controller on the distribution over motion
-#        syntheticKp, syntheticKv: position and velocity gains of the pd controller, either:
-#                                    - a scalar (use as SISO gain, same value for all dofs)
-#                                    - a vector (use as SISO gain)
-#                                    - arrays of shape (dofs x dofs) (MIMO gains)
-#                                    - a dictionary of keyframes of the above, keyed by phase. I.e. {0.0: [10,20,30], 0.5: [10,0,30], 1.0: [0,0,30]}. 
-#                                      (gains get linearly interpolated, beyond first and last keyframe their respective value is used)
-#        
-#        
-#        syntheticKv:         velocity gain of the pd controller, array of shape (dofs x sampleCount) (you can use numpy casting rules) 
-#                            
-#                            
-#        phaseVelocityRelativeFloor: If set to > 0, clip phase velocity to a minimal value phaseVelocityRelativeFloor * 1.0/(expectedDuration)
-#        """
-#        if len(positionsList) == 0:
-#            raise ValueError("no positions supplied")
-#        dofs = positionsList[0].shape[0]
-#        #todo: check that all trajectories have same dof count
-#        md = _MechanicalStateDistributionDescription(dofs=dofs)
-#        ik = _ik.InterpolationKernelGaussian(md, supportsCount)
-
-#        #compute the pseudoinverse of the array mapping parameter to observed positions / torques:
-#        if phasesList is None:
-#            print("Warning: no phase provided")
-#            if _np.any([ positionsList[0].shape != p.shape for p in positionsList]):
-#                raise ValueError("If no phases are specificed, all trajectories must have the same number of samples!")
-#            phases = _np.linspace(0.0, 1.0, positionsList[0].shape[-1])
-#            if  phaseVelocitiesList is None:
-#                phaseVelocitiesList = [_np.full(phases.shape, 1.0 / len(phases))] #assume dphidt=1.0
-#            AInv = ik.getParameterEstimator(phases)
-#            AInvIterator = _it.repeat(AInv)  #we can reuse the expensive computation for all other trajectories
-#        elif isinstance(phasesList , _np.ndarray):
-#            if _np.any([ positionsList[0].shape != p.shape for p in positionsList]):
-#                raise ValueError("If only one phase vector is specificed, all trajectories must have the same number of samples!")
-#            if  phaseVelocitiesList is None:
-#                raise ValueError("Please provide a phase velocity too")
-#            AInv = ik.getParameterEstimator(phasesList,phaseVelocitiesList)
-#            AInvIterator = _it.repeat(AInv)  #we can reuse the expensive computation for all other trajectories
-#            phasesList = _it.repeat(phasesList)
-#            phaseVelocitiesList = _it.repeat(phaseVelocitiesList)
-#        else:
-#            AInvIterator = [ik.getParameterEstimator(p, dphidt) for p,dphidt in zip(phasesList,phaseVelocitiesList) ]
-#        
-#        #select the subset of trajectories to use for means estimation (i.e. to skip synthetic trajectories)
-#        if computeMeanFromSubset is not None:
-#            useForMeanList = [False] * computeMeanFromSubset[0] + [True] * (computeMeanFromSubset[1]-computeMeanFromSubset[0]) + [False] * (len(positionsList)-computeMeanFromSubset[1])
-#        else:
-#                useForMeanList = _it.repeat(True)
-#        
-#        #compute least-squares estimates for the parameters that generated each trajectory:
-#        wSamples_mean = []
-#        observedTrajectories=[]
-#        if velocitiesList is None:
-#            velocitiesList = _it.repeat(None)
-#            
-#        for pos, vel, tau, phi, dphidt, AInv, useForMean in zip(positionsList, velocitiesList, torquesList, phasesList, phaseVelocitiesList, AInvIterator, useForMeanList):
-#            #estimate mean weights, save observation
-#            if useForMean:
-#                mstate = _np.stack((tau,pos), axis=1)
-#                w = dot(AInv, T(mstate), shapes=((2,3),(3,0)))
-#                wSamples_mean.append(w)
-#            observedTrajectories.append((phi, expectedDuration, pos, vel/dphidt, tau/dphidt ))
-#        wSamples_mean = _np.stack(wSamples_mean)
-#        meansEstimated = estimateMean(wSamples_mean, initialVariance)
-
-#        covariancesEstimated = estimateMultivariateGaussianCovariances(wSamples_mean, 1e-3)
-
-#        if useSyntheticTorques:
-
-#            promp_nosynth = ProMP(0*meansEstimated, covariancesEstimated, ik, name=name)
-
-#            sample_multiplier = 5
-#            sample_multiplier_supports = 5
-#            
-#            #estimate covariance matrix:
-#            wSamples = []
-#            #first, generate a reference mean trajectory:
-#            n = ik.supportsCount * sample_multiplier_supports
-#            dt=1.0/n
-#            meanTrajectory = _np.empty((dofs, n))
-#            meanTrajectoryVel = _np.empty((dofs, n))
-#            meanTorque = _np.empty((dofs, n))
-#            synth_phase = _np.linspace(0.0, 1.0, n)
-#            synth_phasevel = _np.full((n) , 1.0)
-#            iPos = md.mStateNames2Index['position']
-#            iVel = md.mStateNames2Index['velocity']
-#            iTau = md.mStateNames2Index['torque']
-#            
-#            #create mean trajectory for plotting:
-#            for i in range(n):
-#                psi = ik.getPsiTime( synth_phase[i], synth_phasevel[i] )
-#                y = dot(psi, meansEstimated, shapes=((2,2),(2,0)))
-#                meanTrajectory[:,i] = y[iPos, :]
-#                meanTrajectoryVel[:,i] = y[iVel, :]
-#                meanTorque[:,i] = y[iTau, :]
-#            synthAinv, synthA = ik.getParameterEstimator(synth_phase, synth_phasevel, alsoNonInv=True)
-
-#            #create the gains matrix of the PD controller used to create synthetic torques:
-#            K = _np.zeros(( n, md.mechanicalStatesCount, dofs, n, md.mechanicalStatesCount, dofs))
-
-#            #create synthetic gains based on keyframes: #TODO
-#            def cast_gains(k):
-#                """
-#                sane gains casting rule:
-#                    scalar -> 
-#                """
-#                if _np.isscalar(k):
-#                    k = _np.full(dofs, k)
-#                else:
-#                    k = _np.asarray(k)
-#                if k.ndim == 1:
-#                    k = _np.diag(k)
-#                return k
-
-#            for syntheticKx, factor, i1, i2 in ((syntheticKp, expectedDuration, iTau, iPos),(syntheticKv, 1.0,  iTau, iVel)):
-#                try: 
-#                    syntheticKxOrderedDict = _collections.OrderedDict(sorted(syntheticKx.items()))
-#                except (AttributeError, TypeError):
-#                    syntheticKxOrderedDict=None
-#                    
-#                if syntheticKxOrderedDict is None:
-#                    syntheticKxPerSample = _np.empty((dofs, n))
-#                    if _np.isscalar(syntheticKx):
-#                        syntheticKx = _np.full((dofs), syntheticKx)
-#                    else:
-#                        syntheticKx = _np.asarray(syntheticKx)
-#                    if syntheticKx.ndim==1:
-#                        syntheticKx = _np.diag(syntheticKx)
-#                    getDiagView(K[:, i1, :, :, i2, :])[:,:]= -syntheticKx * factor
-#                else: #else assume that keyframes have been specified:
-#                    syntheticKxKeyframeValue = _np.zeros((len(syntheticKxOrderedDict), dofs, dofs))
-#                    syntheticKxKeyframePhases= _np.zeros((len(syntheticKxOrderedDict)))
-#                    for i,k in enumerate(syntheticKxOrderedDict):
-#                        syntheticKxKeyframePhases[i] = k
-#                        syntheticKxKeyframeValue[i,:,:] = cast_gains(syntheticKxOrderedDict[k])
-#                    kfp_after  = 1
-#                    for i,p in enumerate(synth_phase):
-#                        while p >= syntheticKxKeyframePhases[kfp_after] and kfp_after < len(syntheticKxKeyframePhases)-1:
-#                            kfp_after +=1
-#                        a = (p - syntheticKxKeyframePhases[kfp_after-1]) / (syntheticKxKeyframePhases[kfp_after]-syntheticKxKeyframePhases[kfp_after-1])
-#                        a = _np.clip(a, 0.0, 1.0)
-#                        interpolated_K = a * syntheticKxKeyframeValue[kfp_after-1,:,:] + (1.0-a) * syntheticKxKeyframeValue[kfp_after,:,:]
-#                        K[i, i1, :, i, i2, :] = -interpolated_K * factor
-
-#            #complete the K tensor:
-#            getDiagView(K)[:,(iPos,iVel),:] = 1
-#                            
-#            #then synthesize errors and control effort:
-#            n_synthetic= ik.dofs_w * ik.supportsCount * sample_multiplier
-#            for i in range(n_synthetic):
-#                ydelta =  promp_nosynth.sampleTrajectory(synth_phase, synth_phasevel[:,_np.newaxis])
-#                ydelta_desired = dot(K, ydelta, shapes=((3,3),(3,0)) )
-##                ydelta_desired[:,iTau,:] += _np.random.normal(scale=1e-2, size=(n,dofs))
-#                w = dot(synthAinv, ydelta_desired[:,(iTau, iPos),:], shapes=((2,3),(3,0)) )
-#                wSamples.append(w)
-#                #if i<20:
-#                #    observedTrajectories.append( (synth_phase, (meanTrajectory + ydelta[:,iPos,:].T)/synth_phasevel , (meanTrajectoryVel + ydelta[:,iVel,:].T)/synth_phasevel, (meanTorque + ydelta[:,iTau,:].T)/synth_phasevel ) )
-#            
-#            wSamples = _np.stack(wSamples)
-#            covariancesEstimated = estimateMultivariateGaussianCovariances(wSamples)
-
-#        #construct and return the promp with the estimated parameters:
-#        promp = ProMP(meansEstimated, covariancesEstimated, ik, name=name, expectedDuration=expectedDuration, phaseVelocityRelativeFloor=phaseVelocityRelativeFloor)
-#        #attach trajectory samples to promp:
-#        promp.wSamples=wSamples_mean
-#        promp.observedTrajectories = observedTrajectories
-#        return promp
+# parallelizable function for EM learning:
+_tnscopy_perprocess = {}
+def _estimation_func(tns_base, Wmean, Wcov, PSIi, Ydeltai):
+        global _tnscopy_perprocess
+        pid = _os.getpid()
+        try:
+            tns_local = _tnscopy_perprocess[pid]
+        except KeyError:
+            tns_local = tns_base.copy()
+            _tnscopy_perprocess[pid] = tns_local
+            #print("deep-copying tns for pid {}".format(pid))
+        tns_local.setTensor('Wmean', Wmean)
+        tns_local.setTensor('Wcov', Wcov)
+        tns_local.setTensor('PSIi', PSIi)
+        #set the observed sample:
+        tns_local.setTensor('Yi', Ydeltai, arrayIndices= (('r', 'd', 'g'),()))
+        #compute the estimation step:
+        tns_local.update()
+        return tns_local.tensorData['Wmeani'].copy(), tns_local.tensorData['Wcovi'].copy(), tns_local.tensorData['negLLidelta'].copy()
 
 
-
-
-
-
-
-#def estimateMean(wSamples, initialVariance, tolerance=1e-7):
-#    nSamples = wSamples.shape[0]
-#    wsamples_flat = _np.reshape(wSamples, (nSamples,-1) )  
-#    means_flat = _np.mean(wsamples_flat, axis=0)
-#    means = means_flat.reshape(wSamples.shape[1], wSamples.shape[2])
-#    return means
-
-#def estimateMultivariateGaussianCovariances(wSamples, initialVariance=None, tolerance=1e-7):
-#    """
-#    estimate the values of a multivariate gaussian distribution
-#    from the given set of samples
-
-#    wSamples: array of size (n, i1, i2) with n=number of samples
-
-#    initialVariance: initial variance to use as regularization when using few samples
-
-#    returns: (means, covarianceTensor)
-#        means: matrix of shape (i1, i2)
-#        covarianceTensor: array of shape (i1, i2, i2, i1)
-#    """
-#    nSamples = wSamples.shape[0]
-#    wsamples_flat = _np.reshape(wSamples, (nSamples,-1) )  
-#    means_flat = _np.mean(wsamples_flat, axis=0)
-#    deviations_flat = _np.sqrt(_np.var(wsamples_flat, axis=0))
-#    deviations_regularized = _np.clip(deviations_flat, tolerance, _np.inf)
-#    wsamples_flat_normalized = (wsamples_flat - means_flat) / deviations_regularized
-#    tensorshape =  (wSamples.shape[1], wSamples.shape[2], wSamples.shape[1], wSamples.shape[2])
-#    
-#    #use sklearn for more sophisticated covariance estimators:
-#    model  = _sklearncovariance.OAS()  #Alternatives: OAS, GraphLasso , EmpiricalCovariance
-#    model.fit(wsamples_flat_normalized)
-#    correlationMatrix = model.covariance_.copy()
-#    assertCovTensorIsWellFormed(correlationMatrix.reshape(tensorshape), tolerance)    
-
-#    scale = _np.diag(deviations_regularized)
-#    covarianceTensor = _np.dot(_np.dot(scale,correlationMatrix),scale.T) 
-#    covarianceTensor = 0.5*(covarianceTensor + covarianceTensor.T) #ensure symmetry in face of numeric deviations
-#    if initialVariance is not None:
-#        covarianceTensor += (_np.eye(wSamples.shape[1]*wSamples.shape[2])*initialVariance - covarianceTensor) * (1./(nSamples+1))
-#    covarianceTensor.shape = tensorshape
-#    assertCovTensorIsWellFormed(covarianceTensor, tolerance)
-#    return covarianceTensor
-
-
-#def assertCovTensorIsWellFormed(covarianceTensor, tolerance):
-#        covarianceMatrix = flattenCovarianceTensor(covarianceTensor)
-#        if _np.any( _np.abs(covarianceMatrix.T - covarianceMatrix) > tolerance):
-#            raise RuntimeWarning("Notice: Covariance Matrix is not symmetric. This usually is an error")
-#        #test the cov matrix of each dof individually to better pinpoint errors:
-#        for i in range(covarianceTensor.shape[1]):
-#            try:
-#                _np.linalg.cholesky(covarianceTensor[:,i,:,i])  #will fail if matrix is not positive-semidefinite
-#            except _np.linalg.linalg.LinAlgError:
-#                eigenvals = _np.linalg.eigvals(covarianceTensor[:,i,:,i])
-#                raise RuntimeWarning("Notice: Covariance Matrix of dof {0} is not positive semi-definite. This usually is an error.\n Eigenvalues: {1}".format(i, eigenvals))
-#        #test complete tensor, i.e. also across dofs:
-#        try:
-#            _np.linalg.cholesky(covarianceMatrix)  #will fail if matrix is not positive-semidefinite
-#        except _np.linalg.linalg.LinAlgError:
-#            eigenvals = _np.linalg.eigvals(covarianceMatrix)
-#            raise RuntimeWarning("Notice: Covariance tensor is not positive semi-definite. This usually is an error.\n Eigenvalues of flattened tensor: {1}".format(i, eigenvals))
 

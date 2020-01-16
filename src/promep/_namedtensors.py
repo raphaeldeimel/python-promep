@@ -11,6 +11,7 @@ also to sample trajectories from a ProMeP
 """
 
 import numpy as _np
+import copy as _copy
 
 
 class TensorNameSpace(object):
@@ -54,6 +55,7 @@ class TensorNameSpace(object):
         self.indexSizes = { }
         self.indexValues = { }
         self.tensorData = {}            # contains the actual array 
+        self._withExternalArrays = set()
         self.tensorDataAsFlattened = {} # flattened view on the actual array
         self.tensorShape = {}
         self.tensorShapeFlattened = {}
@@ -68,7 +70,22 @@ class TensorNameSpace(object):
         if ntm is not None:
             self.indexSizes = dict(ntm.indexSizes)
             self.indexValues = dict(ntm.indexValues)
-    
+
+    def copy(self):
+        clone = _copy.deepcopy(self)
+        #need to restore numpy views which get deep-copied accidentally:
+        for name in self._withExternalArrays:
+            clone.tensorData[name] = self.tensorData[name]
+        clone.tensorDataAsFlattened = {}
+        for name in clone.tensorData:
+            view_flat = clone.tensorData[name].view()
+            view_flat.shape = clone.tensorShapeFlattened[name]
+            clone.tensorDataAsFlattened[name] = view_flat
+        for name in clone.registeredTransposes:
+            tensorname, axes  = clone.registeredTransposes[name]
+            clone.tensorData[name] = _np.transpose(clone.tensorData[tensorname], axes=axes)
+        return clone
+        
 
     def registerIndex(self, name, size, values=None):
         """
@@ -236,7 +253,7 @@ class TensorNameSpace(object):
 
         self.registerTensor(result_name, (result_upper,result_lower), external_array=view)
         #no need to save operand parameters for copmutation as we use views
-        self.registeredTransposes[result_name] = None
+        self.registeredTransposes[result_name] = (tensorname, axes)
         self.update_order.append(result_name)        
         return result_name
 
