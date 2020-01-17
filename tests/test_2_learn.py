@@ -55,10 +55,12 @@ for i in range(30):
     observed_phases[:,0] = _kumaraswamy.cdf(2.0,2.0,_np.linspace(0, 1.0, num))    
     if len_derivs > 1:
         observed_phases[:,1] = _np.gradient(observed_phases[:,0]) / _np.gradient(observed_times)
-       
-    positions = 10.0 * observed_phases[:,0] + offset + _np.random.random(num) / _np.sqrt(num)
+    
+    positionerror = offset + _np.random.random(num) / _np.sqrt(num)
+    positions = 10.0 * observed_phases[:,0] + positionerror
     velocities = _np.gradient(positions) / _np.gradient(observed_times)
-    torques   = 10.0 * observed_phases[:,0] + 2 * (_np.random.random(num)-0.5)
+    torques   = 30 * positionerror + _np.random.random(num)
+    #torques   = 10.0 * observed_phases[:,0] + 2 * (_np.random.random(num)-0.5)
     impulses  = _scipy.integrate.cumtrapz(torques, x=observed_times, initial=0.0)
 
     #fill into values array:

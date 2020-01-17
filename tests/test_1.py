@@ -28,7 +28,7 @@ promp = promep.ProMeP(index_sizes={'derivatives': 1, 'realms': 1})
 promp_modelfree = promep.ProMeP(index_sizes={ 'g': 2, 'gphi':1, 'gtilde':3 })
 
 
-p = promep.ProMeP(index_sizes={'dofs': 4, 'interpolation_parameters':11, 'realms':2, 'derivatives':3}, expected_duration=10., name='test1')
+p = promep.ProMeP(index_sizes={'dofs': 4, 'interpolation_parameters':3, 'realms':2, 'derivatives':3}, expected_duration=10., name='test1')
 
 Wmean = _np.zeros(p.tns.tensorShape['Wmean'])
 rtilde = 0
@@ -61,7 +61,11 @@ p.setParameterDistribution(Wmean, Wcov)
 
 sampled = p.sample()
 
+p.tns.tensorDataAsFlattened['Wcov'][:,:] = _np.random.random(p.tns.tensorShapeFlattened['Wcov'])
+p.plotCovarianceTensor()
+
 fig = p.plot(addExampleTrajectories=None)
+
 
 m = p.getDistribution([0.5])
 
@@ -77,7 +81,7 @@ p.saveToFile(path='temp/')
 p2 = promep.ProMeP.makeFromFile('temp/test1.promep.h5')
 if p2.name != p.name:
     raise Exception()
-if p2.expectedDuration != p.expectedDuration:
+if p2.expected_duration != p.expected_duration:
     raise Exception()
 if p2.tns.indexSizes != p.tns.indexSizes:
     raise Exception()

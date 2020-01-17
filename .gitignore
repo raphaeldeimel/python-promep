@@ -9,3 +9,5 @@ build/
 *.mp4
 
 *.pdf
+
+tests/temp/

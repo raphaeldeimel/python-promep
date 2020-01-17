@@ -190,7 +190,7 @@ class ProMeP(object):
             self._gain_names.add('kv')
         self.readable_names_to_realm_derivative_indices = d
 
-        _pprint.pprint(self.readable_names_to_realm_derivative_indices)
+        #_pprint.pprint(self.readable_names_to_realm_derivative_indices)
 
 
         self.PHI_computer = PHI_computer_cls(self.tns)   
@@ -460,6 +460,7 @@ meansMatrix
                    plotRanges = None,
                    exampleTrajectoryStyleCycler=_plt.cycler('color', ['#6666FF']),
                    useTime=True,
+                   margin=0.05
                    ):
         """
         visualize the trajectory distribution as parameterized by the means of each via point,
@@ -520,10 +521,6 @@ meansMatrix
         
         whatToPlot = [name for name in whatToPlot if name in self.readable_names_to_realm_derivative_indices ]
 
-        if plotRanges is None:
-            plotRanges = self.plot_range_guesses   
-        #e.g. { 'torque': [-20,20], 'position': [-1.5,1.5], 'velocity': [-2.0,2.0], 'gains': [-10,100.0],}
-
         if dofs=='all' or dofs == None:
             if self.tns.indexValues['d'] != None:
                 dofs_to_plot=self.tns.indexValues['d']
@@ -534,15 +531,6 @@ meansMatrix
         subplotfigsize=2.0
 
         plotrows = len(whatToPlot)
-        #make an array with plot limits:
-        limits=_np.zeros((plotrows, 2))
-        for row_idx, plotrowname in enumerate(whatToPlot):
-            if plotRanges is not None and plotrowname in plotRanges:
-                limits[row_idx,0] = plotRanges[plotrowname][0]
-                limits[row_idx,1] = plotRanges[plotrowname][1]
-            else:
-                limits[row_idx,0] = -0.1
-                limits[row_idx,1] = 0.1
             
         #gather the data:
         data_mean  = _np.zeros((num,plotrows, self.tns.indexSizes['d']))
@@ -565,14 +553,14 @@ meansMatrix
                     data_sigma[i,row_idx,:] = _np.sqrt( dist.variancesView[r_idx,:,g_idx] )
 
         fig, axesArray = _plt.subplots(plotrows,len(dofs_to_plot), squeeze=False, figsize=(max(len(dofs_to_plot), plotrows)*subplotfigsize, plotrows*subplotfigsize), sharex='all', sharey='row')
+        for ax in axesArray.flat:
+            ax.margins(x=0.0, y=margin)
             
         #draw confidence intervals and means/variance indicators for the supports
         #plot the zero-variance trajectory + 95% confidence interval        
         for row_idx, row_name in enumerate(whatToPlot):
             for col_idx, dof in enumerate(dofs_to_plot):
                 if rowname in data_gains:
-                    limits[row_idx,0] = min(limits[row_idx,0], _np.min(data_gains[rowname]))
-                    limits[row_idx,1] = max(limits[row_idx,1], _np.max(data_gains[rowname]))
                     axesArray[row_idx,col_idx].axhline(0.0, label=None,  color=(0.4,0.4,0.4), linestyle=':')
                     for col_idx2, dof2 in enumerate(dofs_to_plot):
                         if dof != dof2:
@@ -589,14 +577,6 @@ meansMatrix
                         axesArray[row_idx,col_idx].fill_between(plot_x,lower_boundary, upper_boundary, label="95%",  color=confidenceColor)
                     axesArray[row_idx,col_idx].plot(plot_x,meanvalues, label="mean",  color=meansColor)
 
-                    #update limits:
-                    ymin = _np.min(lower_boundary)
-                    ymax = _np.max(upper_boundary) 
-                    if not _np.isnan(ymin):
-                        limits[row_idx,0] = min(ymin, limits[row_idx,0])
-                    if not _np.isnan(ymax):
-                        limits[row_idx,1] = max(ymax, limits[row_idx,0])
-
         #sample the distribution to plot actual trajectories, times the number given by "addExampleTrajectories":
         if addExampleTrajectories is None:
             addExampleTrajectories = 0
@@ -606,18 +586,13 @@ meansMatrix
 
         for j in range(addExampleTrajectories):
             yvalues = self.sampleTrajectory(phases)
-            #update the desired plotting limits:
             for row_idx, rowname in enumerate(whatToPlot):
                 if rowname in self._gain_names:
                     continue
                 r_idx, g_idx = self.readable_names_to_realm_derivative_indices[rowname]
-                ymin = _np.min(yvalues[:,r_idx,:,g_idx])
-                ymax = _np.max(yvalues[:,r_idx,:,g_idx])
-                limits[row_idx,0] = min(limits[row_idx,0],ymin)
-                limits[row_idx,1] = max(limits[row_idx,1],ymax)
                 for i, dof in enumerate(dofs_to_plot):
                     axesArray[row_idx,col_idx].plot(plot_x, yvalues[:,r_idx,dof,g_idx], alpha=alpha, linewidth=linewidth )
-        largest_observed_time = plot_x[-1]
+        
         if 'observedTrajectories' in self.__dict__:
             for observation_idx, (times, phases_observation, values, Xrefs, Yrefs, Ts) in enumerate(self.observedTrajectories):        
                 for row_idx, rowname in enumerate(whatToPlot):
@@ -636,99 +611,162 @@ meansMatrix
                         for col_idx, dof in enumerate(dofs_to_plot):
                             axesArray[ row_idx, col_idx].plot(phases_observation[:,0], y[:,dof], alpha=alpha, linewidth=linewidth, color=observedColor )
 
-            largest_observed_time = max(largest_observed_time,  _np.max([ tup[0] for tup in self.observedTrajectories]))
 
-        limit_padding=0.05
-        for col_idx, dof in enumerate(dofs_to_plot):
-            for row_idx, rowname in enumerate(whatToPlot):
-                axes = axesArray[row_idx,col_idx]  
-                axes.set_title(r"{0} {1}".format(rowname, dof))
-                if row_idx == plotrows-1: #last row?
-                    if useTime:
-                        axes.set_xlim(plot_x[0],largest_observed_time)
-                        axes.set_xticks( [ 0.0, 0.5*plot_x[-1], plot_x[-1] ] )
-                        axes.set_xticklabels(['0', 'time [s]', '{0:0.1f}'.format(plot_x[-1])])
-                    else:
-                        axes.set_xlim(0,1.0)
-                        axes.set_xticks([0.0,0.5, 1.0])
-                        axes.set_xticklabels(['0', 'phase', '1'])
-                else:
-                    axes.get_xaxis().set_visible(False)
-                if col_idx == 0: #first column?
-                    axes.set_ylabel(units[rowname])
-                else:
-                    axes.get_yaxis().set_visible(False)
-                delta = (limits[row_idx,1] - limits[row_idx,0])* limit_padding
-                #axes.set_ylim(limits[row_idx,0]-delta,limits[row_idx,1]+delta)
+
+        #set ylimits to be equal in each row and xlimits to be equal everywhere
+        for row_idx, rowname in enumerate(whatToPlot):
+                axes_row = axesArray[row_idx,:]  
+                ylimits  = _np.array([ ax.get_ylim() for ax in axes_row ])
+                ylimit_common = _np.max(ylimits, axis=0)
+                ylimit_common_symm = _np.max(_np.abs(ylimits))
+                ylimit_common = (-ylimit_common_symm, ylimit_common_symm) 
+                for dof, ax in zip(dofs_to_plot, axes_row):
+                    ax.set_title(r"{0} {1}".format(rowname, dof))
+                    ax.set_ylim(ylimit_common)                
+                    ax.get_yaxis().set_visible(False)
+                    yticks = [ ylimit_common[0], 0.0, ylimit_common[1] ]                    
+                    yticklabels = ['{0:0.1f}'.format(ylimit_common[0]), '{}'.format(units[rowname]), '{0:0.1f}'.format(ylimit_common[1])]
+                    yticks, yticklabels = tuple(zip(*sorted(zip(yticks, yticklabels))))
+                    ax.set_yticks(yticks)
+                    ax.set_yticklabels(yticklabels)
+
+        for ax in axesArray[:,0]:
+#             ax.set_ylabel(units[rowname])
+             ax.get_yaxis().set_visible(True)
+
+        if useTime:  
+           xlimits_common  = _np.max(_np.array([ ax.get_xlim() for ax in axesArray.flat ]), axis=0)     
+           for ax in axesArray.flat:
+                ax.set_xlim(xlimits_common)                
+                ax.get_xaxis().set_visible(False)                    
+           for ax in axesArray[-1,:]:
+                ax.set_xticks( [ 0.0, 0.5*plot_x[-1], plot_x[-1] ] )
+                ax.set_xticklabels(['0', 'time [s]', '{0:0.1f}'.format(plot_x[-1])])
+                ax.get_xaxis().set_visible(True)                    
+        else:
+           for ax in axesArray:
+                ax.set_xlim(0,1.0)
+           for ax in axesArray[-1,:]:
+                ax.set_xticks([0.0,0.5, 1.0])
+                ax.set_xticklabels(['0', 'phase', '{0:0.1f}'.format(plot_x[-1])])
+
+
         _plt.tight_layout()
         return fig
 
 
-    def plotCovarianceTensor(self, normalized=True):
+    def plotCovarianceTensor(self, plot_type=None):
         """
         plot a correlation tensor of shape (supports x dofs_w, supports x dofs_w,)
         """
-        cov_flat = self.tns.tensorDataAsFlattened['Wcov']
-        
-        cov = self.tns.tensorData['Wcov'].transpose(axes=[0,1,2,3,4,5,6,7])
+        cov = self.tns.tensorData['Wcov']
         variance_view = _np.einsum('ijklijkl->ijkl', self.tns.tensorData['Wcov'])
-        
+
         sigmas = _np.sqrt(variance_view)
 
-        if normalized:  #do complete normalization - yields correlations   
-            cov = cov * sigmas[:,:,:,:, None,None,None,None] * sigmas[None,None,None,None, :,:,:,:] 
-        else:           #only scale for each domain 
-            sigmamax = _np.zeros((2))
-            sigmamax[0] = _np.max(sigmas[0,:,:,:])
-            sigmamax[1] = _np.max(sigmas[1,:,:,:])
-            cov = cov * sigmamax[:,None,None,None, None,None,None,None] * sigmamax[None,None,None,None, :,None,None,None]
+        firstletters = [string[0] for string in self.tns.tensorIndices['Wcov'][0]]
+        axes_to_marginalize = tuple([ firstletters.index(letter) for letter in plot_type ])
+        if len(axes_to_marginalize) == 4:
+            sigmamax = _np.max(sigmas, axis=axes_to_marginalize, keepdims=True)
+            title = "Covariances".format(plot_type)
+        elif len(axes_to_marginalize) == 0:
+            sigmamax = _np.max(sigmas, axis=axes_to_marginalize, keepdims=True)
+            title = "Correlations"
+        else:
+            sigmamax = _np.max(sigmas, axis=axes_to_marginalize, keepdims=True)
+            title = "Covariances ({} only)".format(",".join(plot_type))
+        
+        sigmamax_inv = 1.0 / _np.clip(sigmamax, 1e-6, _np.inf)        
+        cov_scaled = sigmamax_inv[:,:,:,:, None,None,None,None] * cov * sigmamax_inv[None,None,None,None, :,:,:,:] 
+        vmax=_np.max(cov_scaled)
 
-        cov_reordered = _np.transpose(cov, (1,0,2,3, 5,4,6,7))
-        image =_np.reshape(cov_reordered, self.tensorShapeFlattened['Wcov'])
+        cov_reordered =_np.transpose(cov_scaled, axes=(2,0,1,3, 2+4,0+4,1+4,3+4)) #to srgd
+        image =_np.reshape(cov_reordered, self.tns.tensorShapeFlattened['Wcov'])
         gridvectorX = _np.arange(0, image.shape[0], 1)
         gridvectorY = _np.arange(image.shape[1], 0, -1)
 
         fig = _plt.figure(figsize=(3.4,3.4))
-        _plt.pcolor(gridvectorX, gridvectorY, cmap=_cmapCorrelations, vmin=-1, vmax=1)
+        _plt.pcolor(gridvectorX, gridvectorY, image, cmap=_cmapCorrelations, vmin=-vmax, vmax=vmax)
         
         _plt.axis([0, image.shape[0], 0, image.shape[1]])
         _plt.gca().set_aspect('equal', 'box')
 
-        for i in range(self.tns.indexSizes['rtilde']):
-            for j in range(self.tns.indexSizes['stilde']):
-                for k in range(self.tns.indexSizes['dtilde']):
-                    if j == 0 and i==0:
-                        continue
-                    if j== 0:
-                        linewidth=1.0
-                    else:
-                        linewidth=0.1
-                    _plt.axhline(i *n_supports*n_dofs + j * n_dofs , color='k', linewidth=linewidth)
-                    _plt.axvline(i *n_supports*n_dofs + j * n_dofs, color='k', linewidth=linewidth)
+        len_all = self.tns.tensorShapeFlattened['Wcov'][0]
+        len_rtilde = self.tns.indexSizes['rtilde']
+        len_stilde = self.tns.indexSizes['stilde']
+        len_dtilde = self.tns.indexSizes['dtilde']
+        len_gtilde = self.tns.indexSizes['gtilde']
+        line_positions = _np.reshape(_np.arange(self.tns.tensorShapeFlattened['Wcov'][0]), cov_reordered.shape[:4])
+        for r_idx in range(len_rtilde):
+          for g_idx in range(len_gtilde):
+            for s_idx in range(len_stilde):
+                for d_idx in range(len_dtilde):
+                    linewidth=0.5
+                    linestyle='-'
+                    if r_idx!=0:
+                        linewidth=0.2
+                        linestyle='-'
+                    if g_idx!=0:
+                        linewidth=0.2
+                        linestyle=':'
+                    if d_idx!=0:
+                        linewidth=0.0
+                    if linewidth>0.0:
+                        _plt.axhline(line_positions[s_idx,r_idx, g_idx,d_idx], color='k', linewidth=linewidth, linestyle=linestyle)
+                        _plt.axvline(line_positions[s_idx,r_idx, g_idx,d_idx], color='k', linewidth=linewidth, linestyle=linestyle)
 
-        elementnames = list(range(self.tns.indexSizes['stilde'],0,-1)) + list(range(self.tns.indexSizes['stilde'],0,-1))
-        xticks = range(image.shape[0] - self.tns.indexSizes['dtilde']//2,0, -self.tns.indexSizes['dtilde'])
-        _plt.xticks(xticks, elementnames)
-        yticks = range( self.tns.indexSizes['dtilde']//2, image.shape[0], self.tns.indexSizes['dtilde'])
-        _plt.yticks(yticks, elementnames)
-        _plt.colorbar(shrink=0.6, aspect=40, ticks=[-1,0,1], fraction=0.08)
-        if normalized:
-            _plt.title("Correlations")
-        else:
-            _plt.title("Covariances (scaled)")
+        ticks = range( 0, len_all, (len_gtilde*len_dtilde)//2)
+        ticklabels = []
+        ticks=[]
+        offsets=[]
+        for s in range(len_stilde):
+            for r2 in range(2*len_rtilde):
+                ticks.append( ((s)*len_rtilde + r2/2)*len_gtilde*len_dtilde )
+                if r2 == 3:
+                    ticklabels.append('m')
+                    offsets.append(0.0)
+                elif r2 == 2:
+                    ticklabels.append("{}".format(s))
+                    offsets.append(-10)
+                elif r2 == 1:
+                    ticklabels.append("e")
+                    offsets.append(0.0)
+                else:
+                    ticklabels.append("")
+                    offsets.append(0.)
+        for tick, label, offset in zip(ticks, ticklabels, offsets):
+            t = _plt.text(offset, tick, label, {'verticalalignment':'center', 'horizontalalignment':'right', 'size':'xx-small'})
+        _plt.yticks([])
+        _plt.text(0.0,ticks[-1]+0.5*(len_gtilde*len_dtilde), "$\widetilde{r}$", fontdict={'verticalalignment':'bottom', 'horizontalalignment':'right', 'size':'x-small'})
+        _plt.text(-10.0,ticks[-1]+0.5*(len_gtilde*len_dtilde), "$\widetilde{s}$", fontdict={'verticalalignment':'bottom', 'horizontalalignment':'right', 'size':'x-small'})
+
+        #ticks in x:
+        ticks = range( (len_dtilde)//2, len_all, (len_dtilde))
+        ticklabels = []
+        ticks=[]
+        offsets=[]
+        for s in range(len_stilde):
+            for r in range(len_rtilde):
+                for g in range(len_gtilde):
+                    ticks.append( (((s)*len_rtilde + r)*len_gtilde + g)*len_dtilde + len_dtilde/2 )
+                    ticklabels.append(g)
+                    offsets.append(-1.0)
+        for tick, label, offset in zip(ticks, ticklabels, offsets):
+            t = _plt.text(tick, offset, label, fontdict={'verticalalignment':'top', 'horizontalalignment':'center', 'size':'xx-small'}, rotation=0)
+        _plt.text(ticks[-1]+10, 0.0, "$\widetilde{g}$", fontdict={'verticalalignment':'top', 'horizontalalignment':'left', 'size':'x-small'})
+            
+        _plt.xticks([])
+
+
+        _plt.colorbar(shrink=0.6, aspect=40, ticks=[-vmax,0,vmax], fraction=0.08)
+        _plt.title(title)
         ax = _plt.gca()        
-        textlevel2_offset = 0.08
-        _plt.text(0.25,-1.5*textlevel2_offset, "effort", horizontalalignment='center', verticalalignment='center', transform=ax.transAxes)
-        _plt.text(0.75,-1.5*textlevel2_offset, "motion", horizontalalignment='center', verticalalignment='center', transform=ax.transAxes)
-        _plt.text(-textlevel2_offset, 0.75, "effort", horizontalalignment='center', verticalalignment='center', rotation='vertical', transform=ax.transAxes)
-        _plt.text(-textlevel2_offset, 0.25, "motion", horizontalalignment='center', verticalalignment='center', rotation='vertical', transform=ax.transAxes)
         #_plt.tight_layout()
 
 
 
     def learnFromObservations(self, 
-            observations, 
-            useOnly=((0,0),(1,2)),  
+            observations,
             max_iterations=150, 
             minimal_relative_improvement=1e-3,
             ):
@@ -828,13 +866,12 @@ meansMatrix
         while iteration_count < max_iterations:
             iteration_count = iteration_count+1        
             
+            subset = estimation_parameters
+            stabilize = max(0.05, ((1.0*iteration_count) / max_iterations)-0.5)
             #if we have many data points, and changes are still big, select a subset to speed up iteration:
-            if  len(estimation_parameters) > 0.2*tns_learn.tensorData['Wcov'].size and relative_changes > 0.1:
-                subset = [ _random.choice(estimation_parameters) for i in range(tns_learn.tensorData['Wcov'].size//5)]
-                stabilize = max(0.5, ((1.0*iteration_count) / max_iterations))
-            else: 
-                subset = estimation_parameters
-                stabilize = max(0.05, ((1.0*iteration_count) / max_iterations)-0.5)
+#            if  len(estimation_parameters) > 0.2*tns_learn.tensorData['Wcov'].size and relative_changes > 0.1:
+#                subset = [ _random.choice(estimation_parameters) for i in range(tns_learn.tensorData['Wcov'].size//5)]
+#                stabilize = max(0.5, ((1.0*iteration_count) / max_iterations))
                 
             estimates = pool.starmap(_estimation_func, subset)
             #estimates = list(_it.starmap(_estimation_func, subset)) #non-parallel version
