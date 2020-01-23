@@ -52,6 +52,7 @@ class TensorNameSpace(object):
     def __init__(self, ntm = None):
         self.tensorIndices = {}
         self.tensorIndexPositions = {}
+        self.tensorIndexPositionsAll = {}
         self.indexSizes = { }
         self.indexValues = { }
         self.tensorData = {}            # contains the actual array 
@@ -66,6 +67,7 @@ class TensorNameSpace(object):
         self.registeredTransposes = {}
         self.registeredInverses = {}
         self.registeredExternalFunctions = {}
+        self.registeredMeanOperators = {}
         self._tensordot = _np.tensordot #which library to use
         self.update_order = []
         
@@ -122,10 +124,12 @@ class TensorNameSpace(object):
                     
         #reverse lookup for index name->numerical dimension
         indexPositions = ({},{})
+        indexPositionsAll = {}
         pos = 0
         for l in range(2):
             for iname in indexTuples[l]:
                 indexPositions[l][iname] = pos
+                indexPositionsAll[iname] = pos
                 pos = pos + 1
                 
         tensor_shape =  self.getShape(indexTuples)
@@ -134,6 +138,7 @@ class TensorNameSpace(object):
 
         self.tensorIndices[name] = indexTuples
         self.tensorIndexPositions[name] = indexPositions        
+        self.tensorIndexPositionsAll[name] = indexPositionsAll
         if external_array is None:
             self.tensorData[name] = _np.empty(tensor_shape)
         else:
@@ -368,6 +373,30 @@ class TensorNameSpace(object):
         self.registeredExternalFunctions[result_name] = (func,  in_tensor_names, out_tensor_names)
         self.update_order.append(result_name)
 
+
+    def registerMean(self, A, index_to_sum, *, result_name=None, out_array=None):
+        """
+        computes 1^i:A^i * (1^i:(1^i)^T), i.e. the mean across the mentioned index
+        """
+        if result_name == None:
+            result_name = "mean_{}({})".format(index_to_sum,A)
+        upper, lower = self.tensorIndexPositions['A']
+        result_upper = upper.copy()
+        result_lower = lower.copy()
+        if index_to_sum in upper:
+            dim = upper[index_to_sum]
+            result_upper.remove(index_to_sum)
+        elif index_to_sum in lower:
+            dim = lower[index_to_sum]
+            result_lower.remove(index_to_sum)
+        else:
+            raise ValueError("index to sum is not in tensor")
+
+        self.registerTensor(result_name, (result_upper,result_lower))
+        self.registeredMeanOperators[result_name] = (A, dim)
+        self.update_order.append(result_name)
+
+
     def getFlattened(self, tensorname):
             view = self._ntm.tensorData[tensorname].view()
             view.shape = self.tensorShapeFlattened[tensorname]
@@ -404,8 +433,16 @@ class TensorNameSpace(object):
     def getSize(indexname):
         return self.indexSizes[indexname]
 
+    def _makeSliceDef(tensorname, values={}):
+        """ create a slice defintion from named indices
+        values: dict with index name->value pairs
+        """
+        slicedef = [Ellipsis]*myarray.ndim
+        for name in values:
+            slicedef[self.tensorIndexPositionsAll[name]] = values[name]
+        return slicedef
     
-    def setTensor(self, name, values, arrayIndices=None):
+    def setTensor(self, name, values, arrayIndices=None, slice_values=None):
         """
         Use this setter to avoid breaking internal stuff
         """
@@ -415,7 +452,11 @@ class TensorNameSpace(object):
             return
         if arrayIndices is not None:
             values = self._alignDimensions(self.tensorIndices[name], arrayIndices, values)
-        _np.copyto(self.tensorData[name], values)
+        if slice_values != None:
+            slicedef = self._makeSliceDef(slice_values)
+            _np.copyto(self.tensorData[name][slicedef], values)
+        else:
+            _np.copyto(self.tensorData[name], values)
 
 
     def addToTensor(self, name, values, arrayIndices=None):
@@ -472,14 +513,17 @@ class TensorNameSpace(object):
         _np.fill_diagonal(self.tensorDataAsFlattened[name], scale)
 
 
-    def update(self, *args):
+    def update(self, *args, until=None):
         """
         recompute the tensors using the registered operation yielding them
         
         if no arguments are given, recompute all registered operations, in the order they were registered
         """        
-        if args == (): #if no names are given, iterate through all registered operations to update all tensors
+        if until != None:
+            args = self.update_order[:self.update_order.index(until)+1]
+        elif args == (): #if no names are given, iterate through all registered operations to update all tensors
             args = self.update_order
+        
 
         for result_name in args:
             #recompute a single oepration:
@@ -529,6 +573,9 @@ class TensorNameSpace(object):
                 elif result_name in self.registeredExternalFunctions:
                     func, in_tensor_names, out_tensor_names = self.registeredExternalFunctions[result_name]
                     func(self, in_tensor_names, out_tensor_names) #call external function with signature func(in_tensor_tuple, out_tensor_tuple)
+                elif result_name in self.registeredMeanOperators:
+                    A, dim = self.registeredMeanOperators[result_name]
+                    _numpy.mean(self.tensorData['A'], axis=dim, out=self.tensorData[result_name], keepdims=False)
                 else:
                     operation = "unknown"
                     raise Warning("tensor {} seems not to be computed by a registered operation".format(result_name))
@@ -540,7 +587,8 @@ class TensorNameSpace(object):
                 if B != "":
                     print("Details for {}: {}   {}  {}".format(B, self.tensorIndices[B], self.tensorData[B].shape, B_permuter))
                 if result_name != "":
-                    print("Details for {}: {}   {}".format(result_name, self.tensorIndices[result_name], self.tensorShape[result_name]))
+                    for name in result_name.split(','):
+                        print("Details for {}: {}   {}".format(name, self.tensorIndices[name], self.tensorShape[name]))
                 
                 raise e
                             
