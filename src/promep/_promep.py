@@ -50,7 +50,6 @@ _cmapCorrelations = _mpl.colors.LinearSegmentedColormap('Correlations', {
         }
 )
 
-_psihatinv_func_tnscopy_perprocess = {}
 
 
 class ProMeP(object):
@@ -744,7 +743,7 @@ meansMatrix
         _plt.ylabel("-log( p(data|W) )")
         _plt.ylim(0, 10 * _np.mean(self.negLLHistory[-10:]))
 
-    def learnFromObservations(self, 
+    def learnFromObservationsImputation(self, 
             observations,
             max_iterations=150, 
             minimal_relative_improvement=1e-4,
@@ -773,7 +772,7 @@ meansMatrix
         
         #estimate parameters of multivariate normal distribution:
         tns_perDistribution.registerMean('Wo', 'o', result_name='Wmean_uncompensated')        
-        tns_perDistribution.registerSubtraction('Wo', 'Wmean', result_name='deltaWo')
+        tns_perDistribution.registerSubtraction('Wo', 'Wmean_uncompensated', result_name='deltaWo')
         tns_perDistribution.registerTranspose('deltaWo')
         tns_perDistribution.registerContraction('deltaWo', '(deltaWo)^T', result_name="Wcovsum_uncompensated")
         tns_perDistribution.registerMultiplication("Wcovsum_uncompensated", 1.0/tns_perDistribution.indexSizes['o'], result_name='Wcov_uncompensated') 
@@ -861,103 +860,9 @@ meansMatrix
         
         
         
-#        first_part_steps = len(tns_learn.update_order)  #when computing, stop here for averaging over all computed Wmeani
+        
 
-#        #this is done separately, after Wmean has been updated:  
-#        tns_learn.registerSubtraction('Wmeani', 'Wmean')      
-#        tns_learn.registerTranspose('(Wmeani-Wmean)')  
-#        tns_learn.registerContraction('(Wmeani-Wmean)', '((Wmeani-Wmean))^T', result_name='Wcoviempirical')
-#    
-        #_pprint.pprint(tns_learn.tensorIndices)
-       
-    
-        iteration_count = 0 #maximum number of E-M iterations
-        negLL = []
-        tns_learn.setTensorToIdentity('Wcov', scale=100**2) #set the prior
-        tns_learn.setTensor('Wmean', 0.0) #set the prior  
-      
-        #set update() to not know the second part:
-        tns_learn.update_order = tns_learn.update_order[:first_part_steps]
-
-        #preprocess observations into pairs of Yi and PSIi
-        estimation_parameters = []
-        for observation_idx, (times, phases, values, Xrefs, Yrefs, Ts) in enumerate(observations):
-            num = phases.shape[0]
-            for n in range(num):
-                #compute PSIi:
-                self.tns.setTensor('phase', phases[n,:], (('g'),()) )
-                self.tns.setTensor('Xref', Xrefs[n,:,:,:], (('rtilde', 'dtilde', 'g'),()) ) 
-                self.tns.setTensor('Yref', Yrefs[n,:,:,:], (('r', 'd', 'g'),()) )                
-                self.tns.setTensor('T', Ts[n,:,:,:,:], (('r', 'd'),('rtilde', 'dtilde')) )
-                _updateP(self.tns) #call the code that computes map between phase and time derivatives. implemented directly in this class
-                self.PHI_computer.update() #call the hook that computes the interpolating map PHI from the phase:
-                #compute PSI only:
-                self.tns.update('P:PHI', 'PSI', 'O', '(PSI)^-1', 'M')
-                ydelta = values[n,:,:,:] #- self.tns.tensorData['O']
-                estimation_parameters.append( (tns_learn, tns_learn.tensorData['Wmean'], tns_learn.tensorData['Wcov'], self.tns.tensorData['PSI'].copy(), ydelta) ) #saving a view is enough
-
-        relative_improvement = 1.0
-        global _tnscopy_perprocess
-        _tnscopy_perprocess.clear()
-        relative_changes = 1.0
-        while iteration_count < max_iterations:
-            iteration_count = iteration_count+1        
-            
-            subset = estimation_parameters
-            stabilize = max(0.0, ((1.0*iteration_count) / max_iterations)-0.5)
-            #if we have many data points, and changes are still big, select a subset to speed up iteration:
-#            if  len(estimation_parameters) > 0.2*tns_learn.tensorData['Wcov'].size and relative_changes > 0.1:
-#                subset = [ _random.choice(estimation_parameters) for i in range(tns_learn.tensorData['Wcov'].size//5)]
-#                stabilize = max(0.5, ((1.0*iteration_count) / max_iterations))
-                
-            estimates = pool.starmap(_estimation_func, subset)
-            #estimates = list(_it.starmap(_estimation_func, subset)) #non-parallel version
-            
-            #do maximization step for means:
-            Wmean_prime = (1.0-stabilize) * _np.mean([e[0] for e in estimates], axis=0) + stabilize * tns_learn.tensorData['Wmean']
-            tns_learn.setTensor('Wmean', Wmean_prime )
-            #do maximization step for covariances, using Wmean_prime
-            negLLDeltaSum = 0.0
-            sumWcov = 0.0          
-            for Wmeani, Wcovi, negLLdelta in estimates:
-                tns_learn.setTensor('Wmeani', Wmeani)
-                tns_learn.update('(Wmeani-Wmean)','((Wmeani-Wmean))^T','Wcoviempirical')
-                sumWcov = sumWcov + Wcovi + tns_learn.tensorData['Wcoviempirical']
-                negLLDeltaSum += negLLdelta
-#            Wcov_prime = (1.0-stabilize) * sumWcov * (1.0/len(estimates)) + stabilize * tns_learn.tensorData['Wcov']
-            Wcov_prime = sumWcov * (1.0/len(estimates))
-            tns_learn.setTensor('Wcov', Wcov_prime, tns_learn.tensorIndices['Wcoviempirical'] )
-            #re-symmetrize to make iteration numerically stable:
-#            tns_learn.tensorDataAsFlattened['Wcov'][:,:] = 0.5*tns_learn.tensorDataAsFlattened['Wcov'] + 0.5* tns_learn.tensorDataAsFlattened['Wcov'].T
-            negLL.append(negLLDeltaSum / len(subset))
-            
-            #terminate early if neg-log-likelihood of observations stops increasing:
-            n= 4
-            if len(negLL) > n:
-                relative_changes = [ abs((negLL[-i]-negLL[-i-1])/negLL[-i-1]) for i in range(1,n) ]
-                eigenvalues = _np.linalg.eigvals(tns_learn.tensorDataAsFlattened['Wcov'])
-                if _np.any(_np.iscomplex(eigenvalues)) or _np.any(eigenvalues < 0.0):                    
-                    print("Warning: At iteration {} eigenvalues became {} ".format(iteration_count, eigenvalues))
-                #print(_np.diag(tns_learn.tensorDataAsFlattened['Wcov']))
-                #print(tns_learn.tensorData['Wmean'])
-                print("{:.4}".format(relative_changes[0]))
-                relative_changes = max(relative_changes)
-                if relative_changes < minimal_relative_improvement:
-                    print("stopping early at iteration {}".format(iteration_count))
-                    break
-                    
-        self.negLL = _np.array(negLL)
-        #update yourself to the learnt estimate
-        self.tns.setTensor('Wmean', tns_learn.tensorData['Wmean'], tns_learn.tensorIndices['Wmean'])
-        self.tns.setTensor('Wcov', tns_learn.tensorData['Wcov'], tns_learn.tensorIndices['Wcov'])
-        self.expected_duration = _np.mean([times[-1] for(times, phases, values, Xrefs, Yrefs, Ts) in observations])
-
-        self.observedTrajectories = observations #remember the data we learned from, for plotting etc.
-
-
-
-
-    def learnFromObservationEM(self, 
+    def learnFromObservations(self, 
             observations,
             max_iterations=150, 
             minimal_relative_improvement=1e-4,
@@ -979,19 +884,21 @@ meansMatrix
        
         Implements the expectation-maximization procedure of the paper "Using probabilistic movement primitives in robotics" by Paraschos et al.
         """
-        pool = _multiprocessing.Pool(8)        
-        
+        pool = _multiprocessing.Pool()        
         
         #we only need to compute until we have PSI:
-        tns_perSample.update_order = tns_perSample.update_order[:tns_perObservation.update_order.index('PSI')+1]
         tns_Observations =[]
         for observation_idx, (times, phases, values, Xrefs, Yrefs, Ts) in enumerate(observations):
             tns_perObservation = _namedtensors.TensorNameSpace(self.tns)
-            tns_perObservation.registerIndex('samples', len(phases.shape[0]))        
-            tns_perObservation.registerTensor('Yhat', (('samples','r', 'd', 'g'),))
-            tns_perObservation.registerTensor('PSIhat', (('samples','r', 'd', 'g'), ('rtilde', 'gtilde', 'stilde', 'dtilde')))
+            tns_perObservation.registerIndex('samples', phases.shape[0])        
+
+            tns_perObservation.registerTensor('Yhat', (('samples','r', 'd', 'g'),()))
+            tns_perObservation.registerTensor('PSIhat', (('samples','r', 'd', 'g'), ('rtilde', 'gtilde', 'dtilde','stilde')))
+            tns_perObservation.registerTensor('Wmean', self.tns.tensorIndices['Wmean'])
+            tns_perObservation.registerTensor('Wcov', self.tns.tensorIndices['Wcov'])
 
             #likelihood estimators:
+            tns_perObservation.registerTranspose('PSIhat', flip_names=False)
             tns_perObservation.registerContraction('PSIhat', 'Wcov')
             tns_perObservation.registerContraction('PSIhat:Wcov', '(PSIhat)^T')
             tns_perObservation.registerInverse('PSIhat:Wcov:(PSIhat)^T', result_name='Ycovinv')
@@ -1000,34 +907,39 @@ meansMatrix
 
             #estimate likely mean:
             tns_perObservation.registerContraction('PSIhat', 'Wmean')
-            tns_perObservation.registerSubtraction('Yhat'-'PSIhat:Wmean', result_name='Yerror')
+            tns_perObservation.registerSubtraction('Yhat', 'PSIhat:Wmean', result_name='Yerror')
             tns_perObservation.registerContraction('Ycovinv', 'Yerror')
             tns_perObservation.registerContraction('(PSIhat)^T', 'Ycovinv:Yerror')
-            tns_perObservation.registerAddition('deltaW', 'Wmean', result_name='Wmeanestimate')
+            tns_perObservation.registerAddition('(PSIhat)^T:Ycovinv:Yerror', 'Wmean', result_name='Wmeanestimate')
             #estimate likely covariance:
             tns_perObservation.registerContraction('Wcovinv', 'Wcov')            
+            tns_perObservation.registerTranspose('Wcov')
             tns_perObservation.registerContraction('(Wcov)^T', 'Wcovinv:Wcov')           
             tns_perObservation.registerAddition('Wcov', '(Wcov)^T:Wcovinv:Wcov', result_name='Wcovestimate') 
             
             #compute negative-log-likelihood increment to judge progress:
             tns_perObservation.registerTranspose('Yerror')
-            tns_perObservation.registerContraction('(Yerror)^T', 'Ycovinv:Yerror' , result_name ='negLLidelta')
+            tns_perObservation.registerContraction('(Yerror)^T', 'Ycovinv:Yerror' , result_name ='negLLDelta')
 
 
             tns_perObservation.equationsForEstimation = tns_perObservation.update_order.copy()
-            
+
+            tns_perObservation.registerTensor('Wmeanprime', tns_perObservation.tensorIndices['Wmeanestimate'])
+
             tns_perObservation.update_order = []
             tns_perObservation.registerSubtraction('Wmeanestimate', 'Wmeanprime', result_name='deltaWprime')
             tns_perObservation.registerTranspose('deltaWprime')
             
             tns_perObservation.registerContraction('deltaWprime', '(deltaWprime)^T')
-            tns_perObservation.registerAddition('Wcovestimate', 'deltaWprime', '(deltaWprime)^T', 'Wcovprime' ) 
-            tns_perObservation.equationsForWprime = tns_perObservation.update_order.copy()
+            tns_perObservation.registerAddition('Wcovestimate', 'deltaWprime:(deltaWprime)^T', 'Wcovprime' ) 
+            tns_perObservation.equationsForWcovprime = tns_perObservation.update_order.copy()
 
             
             tns_perSample = self.tns.copy()
             # observations may not have used the task space computer - set T and Xref from data
             tns_perSample.update_order.remove('T,Xref')
+            #truncate equations that we do not need to compute:
+            tns_perSample.update_order = tns_perSample.update_order[:tns_perSample.update_order.index('PSI')+1]
             #preprocess samples into pairs of Yhat and PSIhat for each observation:
             for sample in range(tns_perObservation.indexSizes['samples']):
                 #compute PSIi:
@@ -1041,6 +953,7 @@ meansMatrix
             tns_Observations.append(tns_perObservation)
             del tns_perSample
 
+        self.tns_Observations = tns_Observations
 
         #now do expectation-maximization:
         relative_ll_changes = 1.0
@@ -1048,26 +961,31 @@ meansMatrix
         self.tns.setTensor('Wmean', 0.0)
         self.tns.setTensorToIdentity('Wcov')
         negLLHistory = []
+        iteration_count = 0
         while iteration_count < max_iterations:
             iteration_count = iteration_count+1        
             
-            #update mean estimates:
+            #set priors for each observation estimator:
             for tns_perObservation in  tns_Observations:
                 tns_perObservation.setTensor('Wmean', self.tns.tensorData['Wmean'], self.tns.tensorIndices['Wmean'])
                 tns_perObservation.setTensor('Wcov',  self.tns.tensorData['Wcov'], self.tns.tensorIndices['Wcov'])
                 
-            tns_Observations = pool.starmap(_estimation_step, tns_Observations)
+            #compute most likely values: (E-step)
+            #tns_Observations = pool.map(_estimation_step, tns_Observations)
+            map(_estimation_step, tns_Observations)
 
-            #maximize mean:
+            #maximize mean based on likely values  (M-step)
             Wmeanprime = _np.mean([tns_perObservation.tensorData['Wmeanestimate'] for tns_perObservation in tns_Observations])
 
-            for tns in tns_perObservation:
-                tns.setTensor('Wmeanprime', Wmeanprime)
-                tns.update(tns.equationsForWprime)
+            negLLDeltaSum = _np.mean([tns_perObservation.tensorData['negLLDelta'] for tns_perObservation in tns_Observations])
+
+            #maximize covariance based on likely values   (M-step 2nd part)  
+            for tns_perObservation in tns_Observations:
+                tns_perObservation.setTensor('Wmeanprime', Wmeanprime)
+                tns_perObservation.update(*tns_perObservation.equationsForWcovprime)
                 
             Wcovprime = _np.mean([tns_perObservation.tensorData['Wcovprime'] for tns_perObservation in tns_Observations])
 
-            negLLDeltaSum = _np.mean([tns_perObservation.tensorData['negLLDelta'] for tns_perObservation in tns_Observations])
 
             #save new maximized parameters:
             self.tns.setTensor('Wmean', Wmeanprime, tns_Observations[0].tensorIndices['Wmeanestimate'])
@@ -1094,16 +1012,9 @@ meansMatrix
 
 
 # parallelizable function for EM learning. Unfortunately, we need to place it outside of the class:
-def _estimation_step(tns):
-        """
-        reads in distribution parameters, Yi observation points and corresponding PSIi tensors
-        
-        returns the expectation for each observation points given the distribution, as well as the data point's negative log-likelihood
-        
-        (PSIi,Yi, Wmena, Wcov) -> Wmeani, Wcovi
-        """
-        tns_local.update(tns_local.equationsForEstimation)
-        return tns
+def _estimation_step(tns_local):
+    tns_local.update(*tns_local.equationsForEstimation)
+    return tns_local
 
 
 

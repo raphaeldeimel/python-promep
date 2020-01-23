@@ -296,7 +296,7 @@ class TensorNameSpace(object):
         upper, lower = self.tensorIndices[tensorname]
         if flip_underlines:
             result_upper = tuple([self._flipTrailingUnderline(n) for n in lower])
-            result_lower = tuple([self._flipTrailingUnderline(n) for n in upper])
+            result_lower = upper #tuple([self._flipTrailingUnderline(n) for n in upper])
         else:
             result_upper,result_lower = lower, upper
 
@@ -380,15 +380,15 @@ class TensorNameSpace(object):
         """
         if result_name == None:
             result_name = "mean_{}({})".format(index_to_sum,A)
-        upper, lower = self.tensorIndexPositions['A']
+        upper, lower = self.tensorIndexPositions[A]
         result_upper = upper.copy()
         result_lower = lower.copy()
         if index_to_sum in upper:
             dim = upper[index_to_sum]
-            result_upper.remove(index_to_sum)
+            result_upper.pop(index_to_sum)
         elif index_to_sum in lower:
             dim = lower[index_to_sum]
-            result_lower.remove(index_to_sum)
+            result_lower.pop(index_to_sum)
         else:
             raise ValueError("index to sum is not in tensor")
 
@@ -433,14 +433,7 @@ class TensorNameSpace(object):
     def getSize(indexname):
         return self.indexSizes[indexname]
 
-    def _makeSliceDef(tensorname, values={}):
-        """ create a slice defintion from named indices
-        values: dict with index name->value pairs
-        """
-        slicedef = [Ellipsis]*myarray.ndim
-        for name in values:
-            slicedef[self.tensorIndexPositionsAll[name]] = values[name]
-        return slicedef
+
     
     def setTensor(self, name, values, arrayIndices=None, slice_values=None):
         """
@@ -450,12 +443,15 @@ class TensorNameSpace(object):
             raise ValueError()
         if values is None:
             return
-        if arrayIndices is not None:
-            values = self._alignDimensions(self.tensorIndices[name], arrayIndices, values)
         if slice_values != None:
-            slicedef = self._makeSliceDef(slice_values)
-            _np.copyto(self.tensorData[name][slicedef], values)
+            dataView = self.tensorData[name]
+            for index_name in slice_values:
+                axis = self.tensorIndexPositionsAll[name][index_name]
+                dataView = _np.take( dataView, slice_values[index_name], axis=axis )
+            _np.copyto(dataView, values)
         else:
+            if arrayIndices is not None:
+                values = self._alignDimensions(self.tensorIndices[name], arrayIndices, values)
             _np.copyto(self.tensorData[name], values)
 
 
@@ -587,9 +583,8 @@ class TensorNameSpace(object):
                 if B != "":
                     print("Details for {}: {}   {}  {}".format(B, self.tensorIndices[B], self.tensorData[B].shape, B_permuter))
                 if result_name != "":
-                    for name in result_name.split(','):
-                        print("Details for {}: {}   {}".format(name, self.tensorIndices[name], self.tensorShape[name]))
-                
+                        for name in result_name.split(','):
+                            print("Details for {}: {}   {}".format(name, self.tensorIndices[name], self.tensorShape[name]))
                 raise e
                             
 
