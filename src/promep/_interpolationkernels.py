@@ -16,7 +16,13 @@ class InterpolationGaussian(object):
     This class provides a gaussians-based  interpolation scheme 
     
     """
-    def __init__(self, tensornamespace):
+    def __init__(self, tensornamespace=None):
+        self._parenttensornamespace = None
+        if tensornamespace != None:
+            self._configure(tensornamespace)
+            
+    
+    def _configure(self, tensornamespace):
         """
         returns a function that takes the phase and outputs the interpolation vector psi
 
@@ -37,16 +43,15 @@ class InterpolationGaussian(object):
             This is not done in [1]. For having the original ProMP formulation behavior, set repeatedSupports=0
 
         """
-        self.tensornamespace_parent = tensornamespace
-        self.tns = _namedtensors.TensorNameSpace(tensornamespace)
-        self.tns.registerTensor('PHI', (('gphi',),('stilde',)))
+        self.indexSizes = dict(tensornamespace.indexSizes)
+        self.tensorShape = dict(tensornamespace.tensorShape)
         
         #some fixed parameters:
         clip_at_sigma = 3.0  #at how many sigmas should the gaussian drop to 0.0? (I.e. to remove its long tail)
         self._repeatExtremalSupports = 3
 
         #compute with of the gaussians, and where to suppress the tail completely
-        delta = 1.0 / (self.tns.indexSizes['stilde']-1)
+        delta = 1.0 / (self.indexSizes['stilde']-1)
 
         self.sigma = 1.0 * delta #no real need to change this to different widths
 
@@ -54,7 +59,7 @@ class InterpolationGaussian(object):
 
         start = 0.0 - self._repeatExtremalSupports * delta
         end   = 1.0 + self._repeatExtremalSupports * delta
-        self._phasesOfSupportsAndRepeated = _np.linspace(start, end, self.tns.indexSizes['stilde']+2*self._repeatExtremalSupports)
+        self._phasesOfSupportsAndRepeated = _np.linspace(start, end, self.indexSizes['stilde']+2*self._repeatExtremalSupports)
         self.phasesOfSupports = self._phasesOfSupportsAndRepeated[self._repeatExtremalSupports:-self._repeatExtremalSupports]
         #compute the two fixed factors for the gaussian curves:
         self._a = -0.5/(self.sigma**2)  #in exponent
@@ -67,6 +72,8 @@ class InterpolationGaussian(object):
         scale =  _np.sum(self.getPhi(0.5)[0,:])
         self._b = (1.0 + self._clipAmount)  / scale #scale, but also adjust for the clipping offset
         self._clipAmount = self._clipAmount / scale #adjust clipping offset to the scale
+    
+        self._parenttensornamespace = tensornamespace #remember from where we got our configuration from
 
 
     def _evaluateBasisFunctions(self, phase, out_array):
@@ -81,7 +88,7 @@ class InterpolationGaussian(object):
         
         #iterate through all requested derivatives and fill  self.interpolationMatrix:
         nthDerivative = Bases0thDerivativeAll
-        for gphi in range(self.tns.indexSizes['gphi']):
+        for gphi in range(self.indexSizes['gphi']):
             #aggregate the repeated supports beyond the interval into the first and last one:
             out_array[gphi,:] = nthDerivative[self._repeatExtremalSupports:-self._repeatExtremalSupports]
             out_array[gphi,0]  += _np.sum(nthDerivative[:self._repeatExtremalSupports])
@@ -89,15 +96,16 @@ class InterpolationGaussian(object):
             nthDerivative = distances * self._c *  nthDerivative        
         return # data written to out_array 
 
-    def get_PHI_view(self):
-        return self.tns.tensorData['PHI'].view()    
-            
 
-    def update(self):
+    def update(self, out_tns,  in_tensor_names, out_tensor_names):
         """
-        updates the PHI tensor in the calling object's tensor manager
+        updates the interpolation tensor in the calling object's tensor manager
         """
-        self._evaluateBasisFunctions(self.tensornamespace_parent.tensorData['phase'][0], out_array = self.tns.tensorData['PHI'])
+        if not self._parenttensornamespace is out_tns: #if things changed: reconfigure
+            self._configure(out_tns)
+        phase = in_tensor_names[0]
+        phi = out_tensor_names[0]
+        self._evaluateBasisFunctions(out_tns.tensorData[phase][0], out_array = out_tns.tensorData[phi])
 
 
     def getPhi(self, phase, out_array=None):
@@ -110,7 +118,7 @@ class InterpolationGaussian(object):
         if out_array is given, write results into this array
         """
         if out_array == None:
-            out_array = _np.zeros_like(self.tns.tensorData['PHI'])
+            out_array = _np.zeros((self.indexSizes['gphi'],self.indexSizes['stilde']))
         self._evaluateBasisFunctions(phase, out_array)
         return out_array
 

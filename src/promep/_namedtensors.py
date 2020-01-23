@@ -61,9 +61,11 @@ class TensorNameSpace(object):
         self.tensorShapeFlattened = {}
         self.registeredAdditions = {}
         self.registeredSubtractions = {}
+        self.registeredScalarMultiplications = {}
         self.registeredContractions = {}
         self.registeredTransposes = {}
         self.registeredInverses = {}
+        self.registeredExternalFunctions = {}
         self._tensordot = _np.tensordot #which library to use
         self.update_order = []
         
@@ -105,7 +107,7 @@ class TensorNameSpace(object):
             self.indexValues[name] = list(values)
             self.indexValues[name2] = list(values)
 
-    def registerTensor(self, name, indexTuples, external_array = None):
+    def registerTensor(self, name, indexTuples, external_array = None, initial_values='zeros'):
         """
         Make the manager aware of a specific tensor and the shape of its indices
         
@@ -133,16 +135,28 @@ class TensorNameSpace(object):
         self.tensorIndices[name] = indexTuples
         self.tensorIndexPositions[name] = indexPositions        
         if external_array is None:
-            self.tensorData[name] = _np.zeros(tensor_shape)
+            self.tensorData[name] = _np.empty(tensor_shape)
         else:
             if external_array.shape != tensor_shape:
                 raise ValueError(f'{external_array.shape} != {tensor_shape}')
             self.tensorData[name] = external_array  #set a reference to an external data
+        
         self.tensorShape[name] = tensor_shape
         self.tensorShapeFlattened[name] = tensor_shape_flattened
         view_flat = self.tensorData[name].view()
         view_flat.shape = tensor_shape_flattened
         self.tensorDataAsFlattened[name] = view_flat
+
+        if initial_values == 'zeros':
+            self.setTensor(name, 0.0)
+        elif initial_values == 'identity' or 'kroneckerdelta':
+            if any([u != self._flipTrailingUnderline(l) for u,l in zip(self.tensorIndices[name])]) or len(self.tensorIndices[name][0]) != len(self.tensorIndices[name][1]):
+                raise ValueError("upper and lower indices for initializing to identity / Kronecker delta must match exactly (up to trailing underlines)!")
+            self.setTensorToIdentity(name)
+        elif initial_values == 'ones':
+            self.setTensor(name, 1.0)
+        else:
+            raise ValueError("value of initial_values argument not recognized")
 
 
     def registerBasisTensor(self, basistensorname, index_name_tuples,  index_value_tuples):
@@ -166,6 +180,16 @@ class TensorNameSpace(object):
                     coord_pos.append(self.indexValues[index_name].index(value))
         self.tensorData[basistensorname][tuple(coord_pos)] = 1.0
 
+
+    def registerMultiplication(self, tensornameA, scalar, result_name=None, out_array=None):
+
+        if result_name is None:
+            result_name = tensornameA + '*' + str(int(scalar))
+    
+        self.registerTensor(result_name, self.tensorIndices[tensornameA], external_array=out_array)        
+        self.registeredScalarMultiplications[result_name] = (tensornameA, scalar)
+        self.update_order.append(result_name)
+    
 
     def registerContraction(self, tensornameA, tensornameB, result_name=None, out_array=None, flip_underlines=False):
         """
@@ -336,6 +360,14 @@ class TensorNameSpace(object):
         self.update_order.append(result_name)        
         return result_name        
 
+    def registerExternalFunction(self, func,  in_tensor_names, out_tensor_names, out_tensor_indices, result_name=None):
+        if result_name == None:
+            result_name = ",".join(out_tensor_names)
+        for name, indices in zip(out_tensor_names, out_tensor_indices):
+            self.registerTensor(name, indices)
+        self.registeredExternalFunctions[result_name] = (func,  in_tensor_names, out_tensor_names)
+        self.update_order.append(result_name)
+
     def getFlattened(self, tensorname):
             view = self._ntm.tensorData[tensorname].view()
             view.shape = self.tensorShapeFlattened[tensorname]
@@ -491,6 +523,12 @@ class TensorNameSpace(object):
                     else:
                         Bdata = self.tensorData[B]
                     _np.subtract(self.tensorData[A], Bdata, out= self.tensorData[result_name])
+                elif result_name in self.registeredScalarMultiplications:  
+                    A,scalar = self.registeredScalarMultiplications[result_name]                  
+                    _np.multiply(self.tensorData[A], scalar, out=self.tensorData[result_name])            
+                elif result_name in self.registeredExternalFunctions:
+                    func, in_tensor_names, out_tensor_names = self.registeredExternalFunctions[result_name]
+                    func(self, in_tensor_names, out_tensor_names) #call external function with signature func(in_tensor_tuple, out_tensor_tuple)
                 else:
                     operation = "unknown"
                     raise Warning("tensor {} seems not to be computed by a registered operation".format(result_name))

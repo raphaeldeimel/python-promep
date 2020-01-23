@@ -27,8 +27,9 @@ promp = promep.ProMeP(index_sizes={'derivatives': 1, 'realms': 1})
 
 promp_modelfree = promep.ProMeP(index_sizes={ 'g': 2, 'gphi':1, 'gtilde':3 })
 
-
-p = promep.ProMeP(index_sizes={'dofs': 4, 'interpolation_parameters':3, 'realms':2, 'derivatives':3}, expected_duration=10., name='test1')
+dofs = 4
+derivatives = 3
+p = promep.ProMeP(index_sizes={'dofs': dofs, 'interpolation_parameters':3, 'realms':2, 'derivatives':derivatives}, expected_duration=10., name='test1')
 
 Wmean = _np.zeros(p.tns.tensorShape['Wmean'])
 rtilde = 0
@@ -42,29 +43,26 @@ for dtilde in range(p.tns.indexSizes['dtilde']):
     Wmean[rtilde,gtilde,:,dtilde] += - 5 * dtilde
     Wmean[rtilde,1,:,dtilde] += _np.linspace(0, 15, p.tns.indexSizes['stilde']) 
 
-Wcov = _np.zeros(p.tns.tensorShape['Wcov'])
-
-
 Wcov_flat = _np.zeros(p.tns.tensorShapeFlattened['Wcov'])
 for i in range(Wcov_flat.shape[0]):
-    Wcov_flat[i,i] = 0.2
+    Wcov_flat[i,i] = 5.0
 Wcov = Wcov_flat.reshape(p.tns.tensorShape['Wcov'])
 #r,g,s,d
-Wcov[1,0:2,:,:, :,:,:,:] = 0.0
-Wcov[:,:,:,:, 1,0:2,:,:] = 0.0
-
-Wcov[0,1:3,:,:, :,:,:,:] = 0.0
-Wcov[:,:,:,:, 0,1:3,:,:] = 0.0
+for s in range(3):
+    Wcov[1,2,s,:, 0,0,s,:] = -1.0 * (s+2) * _np.eye((dofs))
+    Wcov[0,0,s,:, 1,2,s,:] = Wcov[1,2,s,:, 0,0,s,:]
 
 
 p.setParameterDistribution(Wmean, Wcov)
 
 sampled = p.sample()
+generalized_phase = [0.89, 1.0, 0.0][:derivatives]
+dist = p.getDistribution(generalized_phase=generalized_phase)
+dist.plotCorrelations()
 
-p.tns.tensorDataAsFlattened['Wcov'][:,:] = _np.random.random(p.tns.tensorShapeFlattened['Wcov'])
+p.plot(addExampleTrajectories=None)
 p.plotCovarianceTensor()
 
-fig = p.plot(addExampleTrajectories=None)
 
 
 m = p.getDistribution([0.5])

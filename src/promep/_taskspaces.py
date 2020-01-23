@@ -19,7 +19,13 @@ class JointSpaceToJointSpaceTransform(object):
     If update() is called, it reads in the tensor Yref and sets tensors Xref and T
     """
     
-    def __init__(self, tensornamespace):
+    def __init__(self, tensornamespace=None):
+        self._parenttensornamespace = None
+        if tensornamespace != None:
+            self._configure(tensornamespace)
+
+
+    def _configure(self, tensornamespace):
         self.tns = _namedtensors.TensorNameSpace(tensornamespace) #copies index definitions only
         #Path to compute T:
         self.tns.registerTensor('Yref', (('r','d','g',),()), external_array=tensornamespace.tensorData['Yref'] ) #where to linearize
@@ -45,11 +51,24 @@ class JointSpaceToJointSpaceTransform(object):
         #self.tns.registerBasisTenso('e_motion_1_motion_0', (('r',),('rtilde',)), (('motion',), ('motion',)) )
         #self.tns.registerContraction('e_motion_1_motion_0', 'dotJinv')        
         #self.tns.registerAddition('e_effort_effort:Jt+e_motion_motion:Jinv', 'e_motion_1_motion_0:dotJinv', result_name='T') #has indices (('r', 'd')('rtilde', 'dtilde'))
-        self.update()
-        
-    def update(self):
+        self.tns.update()
+    
+    
+    def update(self, out_tns,  in_tensor_names, out_tensor_names):    
+        """
+        in_tensor_names: Xref, Yref
+        out_tensor_names: T
+        """
+        if not self._parenttensornamespace is out_tns: #if things changed: reconfigure
+            self._configure(out_tns)
+    
+        Xref = in_tensor_names[0]
+        Yref = in_tensor_names[1]
+        T = out_tensor_names[0]
         # for other mappings: set Xref, Jt and Jinv here
-        self.tns.setTensor('Xref', self.tns.tensorData['Yref']) #for joint to joint space, simply copy the reference point
+        self.tns.setTensor(Xref, out_tns.tensorData[Xref]) #for joint to joint space, simply copy the reference point
+        self.tns.setTensor(Yref, out_tns.tensorData[Yref]) #for joint to joint space, simply copy the reference point
         self.tns.update() #recomputes T
+        out_tns.setTensor(T, self.tns.tensorData['T']) #copy T into namespace of callee
 
 

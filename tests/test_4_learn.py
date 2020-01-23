@@ -19,22 +19,22 @@ import matplotlib.pylab as pylab
 import matplotlib.pyplot as plt
 
 
-len_derivs = 2
+len_derivs = 1
 len_dofs = 1
 
 p = promep.ProMeP(index_sizes={
     'dofs': len_dofs, 
-    'interpolation_parameters':7, 
+    'interpolation_parameters':5, 
     'g': len_derivs,
     'gphi': len_derivs, 
     'gtilde': len_derivs
-    }, name='test_2')
+    }, name='test_4')
 
 
 from promep import _kumaraswamy
 
 #create a set of "observations:"
-num = 100
+num = 30
 duration = 1.0
 
 kv = _np.array((0.0, 0.0))
@@ -42,14 +42,13 @@ kp = _np.array((10.0, 1.0))
 observations = []
 free_variables = []
 for i in range(30):
-    duration = (_np.random.random() + 1.5) * 5.0
-    offset = 1.0 * (_np.random.random() - 0.5)
-    free_variables.append((duration, offset))
+    duration = 1.0
+    offset = 1000 * _np.random.normal()
+    free_variables.append((offset))
     
     observed_times = _np.linspace(0, duration, num)
     observed_dts =  ( observed_times[1:] - observed_times[:-1] )
     observed_phases = _np.zeros((num, len_derivs))              # num, g
-    observed_values = _np.zeros((num, 2, len_dofs, len_derivs)) # num,r,d,g
     observed_Yrefs = _np.zeros((num, 2, len_dofs, len_derivs))   # num,r,d,g
     observed_Xrefs = _np.zeros((num, 2, len_dofs, len_derivs))   # num,rtilde,dtilde,gtilde
     I = _np.eye((2*len_dofs)).reshape((2, len_dofs, 2,len_dofs)) #r,d,rtilde, dtilde
@@ -58,16 +57,16 @@ for i in range(30):
     d_idx = 0
 
     #set some notrivial phase profile:
-    observed_phases[:,0] = _kumaraswamy.cdf(2.0,2.0,_np.linspace(0, 1.0, num))    
+    #observed_phases[:,0] = _kumaraswamy.cdf(1.0,1.0,_np.linspace(0, 1.0, num))    
+    observed_phases[:,0] = _np.linspace(0, 1.0, num)   
     if len_derivs > 1:
         observed_phases[:,1] = _np.gradient(observed_phases[:,0]) / _np.gradient(observed_times)
     
-    positionerror = offset + _np.random.random(num) / _np.sqrt(num)
-    positions = 10.0 * observed_phases[:,0] + positionerror
-    velocities = _np.gradient(positions) / _np.gradient(observed_times)
-    torques   = 30 * positionerror + _np.random.random(num)
-    #torques   = 10.0 * observed_phases[:,0] + 2 * (_np.random.random(num)-0.5)
-    impulses  = _scipy.integrate.cumtrapz(torques, x=observed_times, initial=0.0)
+    velocities = 1.0 * (1.0 + _np.random.normal(size=num) / _np.sqrt(num))
+    positions = _scipy.integrate.cumtrapz(velocities, x=observed_times, initial=0.0) + offset
+
+    torques   = 1.0 * _np.random.normal(size=num) + 1000 * _np.random.normal() #- 1*offset
+    impulses  = _scipy.integrate.cumtrapz(torques, x=observed_times)
 
     #fill into values array:
     data = {
@@ -76,6 +75,7 @@ for i in range(30):
         'torque':   torques, 
         'impulse':  impulses, 
     }
+    observed_values = _np.zeros((num, 2, len_dofs, len_derivs)) # num,r,d,g    
     for name in p.readable_names_to_realm_derivative_indices:
         if name in ('kp', 'kv'):
             continue
@@ -89,7 +89,7 @@ for i in range(30):
 
     
 
-p.learnFromObservations(observations, max_iterations=500)
+p.learnFromObservations(observations, max_iterations=300)
 p.saveToFile(path='./temp')
 
 p.plotLearningProgress()
