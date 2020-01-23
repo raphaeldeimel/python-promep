@@ -28,7 +28,7 @@ class JointSpaceToJointSpaceTransform(object):
     def _configure(self, tensornamespace):
         self.tns = _namedtensors.TensorNameSpace(tensornamespace) #copies index definitions only
         #Path to compute T:
-        self.tns.registerTensor('Yref', (('r','d','g',),()), external_array=tensornamespace.tensorData['Yref'] ) #where to linearize
+        self.tns.registerTensor('Yref', (('r','d','g',),()) ) #where to linearize
         self.tns.registerTensor('Jt', (('d',),('dtilde',)))
         self.tns.registerTensor('Jinv', (('d',),('dtilde',)))
         self.tns.registerBasisTensor('e_motion_motion', (('r',),('rtilde',)), (('motion',), ('motion',)) )
@@ -40,8 +40,8 @@ class JointSpaceToJointSpaceTransform(object):
             self.tns.registerContraction('e_effort_effort', 'Jt')
 
         #computed output tensors:
-        self.tns.registerTensor('Xref', (('rtilde','dtilde','g'),()), external_array=tensornamespace.tensorData['Xref']  )      
-        self.tns.registerAddition('e_effort_effort:Jt', 'e_motion_motion:Jinv', result_name='T', out_array=tensornamespace.tensorData['T']) #has indices (('r', 'd')('rtilde', 'dtilde'))
+        self.tns.registerTensor('Xref', (('rtilde','dtilde','g'),()))      
+        self.tns.registerAddition('e_effort_effort:Jt', 'e_motion_motion:Jinv', result_name='T') #has indices (('r', 'd')('rtilde', 'dtilde'))
 
         self.tns.setTensorToIdentity('Jt')
         self.tns.setTensorToIdentity('Jinv')
@@ -56,19 +56,19 @@ class JointSpaceToJointSpaceTransform(object):
     
     def update(self, out_tns,  in_tensor_names, out_tensor_names):    
         """
-        in_tensor_names: Xref, Yref
-        out_tensor_names: T
+        in_tensor_names: Yref
+        out_tensor_names: T,Xref
         """
         if not self._parenttensornamespace is out_tns: #if things changed: reconfigure
             self._configure(out_tns)
     
-        Xref = in_tensor_names[0]
-        Yref = in_tensor_names[1]
+        Yref = in_tensor_names[0]
         T = out_tensor_names[0]
+        Xref = out_tensor_names[1]
         # for other mappings: set Xref, Jt and Jinv here
-        self.tns.setTensor(Xref, out_tns.tensorData[Xref]) #for joint to joint space, simply copy the reference point
-        self.tns.setTensor(Yref, out_tns.tensorData[Yref]) #for joint to joint space, simply copy the reference point
+        self.tns.setTensor('Yref', out_tns.tensorData[Yref]) #for joint to joint space, simply copy the reference point
         self.tns.update() #recomputes T
         out_tns.setTensor(T, self.tns.tensorData['T']) #copy T into namespace of callee
+        out_tns.setTensor(Xref, self.tns.tensorData['Xref']) #copy O = T:Xref into namespace of callee
 
 
