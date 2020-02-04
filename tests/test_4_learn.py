@@ -35,14 +35,13 @@ from promep import _kumaraswamy
 
 #create a set of "observations:"
 num = 30
-duration = 1.0
 
 kv = _np.array((0.0, 0.0))
 kp = _np.array((10.0, 1.0))
 observations = []
 free_variables = []
 for i in range(30):
-    duration = 1.0
+    duration = 2.0 + _np.random.normal()
     offset = 1000 * _np.random.normal()
     free_variables.append((offset))
     
@@ -62,6 +61,7 @@ for i in range(30):
     if len_derivs > 1:
         observed_phases[:,1] = _np.gradient(observed_phases[:,0]) / _np.gradient(observed_times)
     
+    observed_phases = observed_phases + 0.01 * _np.random.normal(size=(num, 1))
     velocities = 1.0 * (1.0 + _np.random.normal(size=num) / _np.sqrt(num))
     positions = _scipy.integrate.cumtrapz(velocities, x=observed_times, initial=0.0) + offset
 
@@ -89,7 +89,7 @@ for i in range(30):
 
     
 
-p.learnFromObservations(observations, max_iterations=300)
+p.learnFromObservations(observations, max_iterations=10)
 p.saveToFile(path='./temp')
 
 p.plotLearningProgress()

@@ -24,10 +24,10 @@ len_dofs = 1
 
 p = promep.ProMeP(index_sizes={
     'dofs': len_dofs, 
-    'interpolation_parameters':7, 
+    'interpolation_parameters':5, 
     'g': len_derivs,
     'gphi': len_derivs, 
-    'gtilde': len_derivs
+    'gtilde': len_derivs,
     }, name='test_2')
 
 
@@ -62,12 +62,14 @@ for i in range(30):
     if len_derivs > 1:
         observed_phases[:,1] = _np.gradient(observed_phases[:,0]) / _np.gradient(observed_times)
     
-    positionerror = offset + _np.random.random(num) / _np.sqrt(num)
+    positionerror = offset + 0.1*_np.random.random(num) / _np.sqrt(num)
     positions = 10.0 * observed_phases[:,0] + positionerror
     velocities = _np.gradient(positions) / _np.gradient(observed_times)
-    torques   = 30 * positionerror + _np.random.random(num)
+
+    torques_kp = -30 * positions
+    torques   = torques_kp + _np.random.random(num)
     #torques   = 10.0 * observed_phases[:,0] + 2 * (_np.random.random(num)-0.5)
-    impulses  = _scipy.integrate.cumtrapz(torques, x=observed_times, initial=0.0)
+    impulses  = _scipy.integrate.cumtrapz(torques, x=observed_times, initial=_np.mean(torques_kp))
 
     #fill into values array:
     data = {
@@ -92,7 +94,7 @@ for i in range(30):
 p.learnFromObservations(observations, max_iterations=500)
 p.saveToFile(path='./temp')
 
-p.plotLearningProgress()
+#p.plotLearningProgress()
 
 p.plot()
 p.plot(useTime=False)
