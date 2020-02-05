@@ -42,7 +42,7 @@ kp = _np.array((10.0, 1.0))
 observations = []
 free_variables = []
 for i in range(30):
-    duration = (_np.random.random() + 1.5) * 5.0
+    duration = (_np.random.random() + 0.1) * 10.0
     offset = 1.0 * (_np.random.random() - 0.5)
     free_variables.append((duration, offset))
     

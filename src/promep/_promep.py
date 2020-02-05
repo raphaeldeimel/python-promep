@@ -68,6 +68,7 @@ class ProMeP(object):
                  Wcov=None, 
                  name="unnamed", 
                  expected_duration=1.0, 
+                 expected_phase_profile_params=(1.0, 1.0),  #parameters of a Kumaraswamy distribution
                  PHI_computer_cls=_interpolationkernels.InterpolationGaussian,   #class to compute the PHI tensor with 
                  T_computer_cls=_taskspaces.JointSpaceToJointSpaceTransform,                 #class to compute the T tensor with
         ):
@@ -230,6 +231,7 @@ class ProMeP(object):
         self.tolerance=1e-7
         
         self.expected_duration = expected_duration
+        self.expected_phase_profile_params = expected_phase_profile_params
 
         if not Wmean is None:
             self.tns.setTensor('Wmean', Wmean)
@@ -269,6 +271,8 @@ class ProMeP(object):
         serializedDict[u'Wmean'] = self.tns.tensorData['Wmean']
         serializedDict[u'Wcov'] = self.tns.tensorData['Wcov']
         serializedDict[u'expected_duration'] = self.expected_duration
+        serializedDict[u'expected_phase_profile_params'] = self.expected_phase_profile_params
+        
         return serializedDict
 
 
@@ -288,7 +292,8 @@ class ProMeP(object):
             'Wmean': serializedDict[u'Wmean'],
             'Wcov': serializedDict[u'Wcov'],
             'name': serializedDict[u'name'],
-            'expected_duration':  serializedDict[u'expected_duration'],         
+            'expected_duration':  serializedDict[u'expected_duration'], 
+            'expected_phase_profile_params': serializedDict[u'expected_phase_profile_params']
         }
         return cls(**kwargs)
         
@@ -437,16 +442,16 @@ meansMatrix
         confidenceColor = "#DDDDDD"
         meansColor = '#BBBBBB'
         observedColor = '#880000'
-        kpColor = '#DD0000'
-        kvColor = '#008800'
-        kpCrossColor = '#DD8888'
-        kvCrossColor = '#88FF88'
+        kpColor = '#000000'
+        kvColor = '#000000'
+        kpCrossColor = '#666666'
+        kvCrossColor = '#666666'
 
         phases = _np.zeros((num, self.tns.indexSizes['gphi']))
         
         if useTime: 
             times = _np.linspace(0, self.expected_duration, num)     
-            phases[:,0] = _kumaraswamy.cdf(2, 2, _np.linspace(0,1.0,num))
+            phases[:,0] = _kumaraswamy.cdf(self.expected_phase_profile_params[0], self.expected_phase_profile_params[1], _np.linspace(0,1.0,num))
             plot_x = times
         else:
             phases[:,0] = _np.linspace(0.0, 1.0, num)
@@ -454,7 +459,7 @@ meansMatrix
             
         if self.tns.indexSizes['gphi'] > 1:
             if useTime:
-                phases[:,1] = 1.0/self.expected_duration
+                phases[:,1] = _kumaraswamy.pdf(self.expected_phase_profile_params[0], self.expected_phase_profile_params[1], _np.linspace(0,1.0,num))
             else:
                 phases[:,1] = 1.0
 
@@ -554,28 +559,6 @@ meansMatrix
                 for i, dof in enumerate(dofs_to_plot):
                     axesArray[row_idx,col_idx].plot(plot_x, yvalues[:,r_idx,dof,g_idx], alpha=alpha, linewidth=linewidth )
         
-        if 'observedTrajectories' in self.__dict__:
-            for observation_idx, (times, phases_observation, values, Xrefs, Yrefs, Ts) in enumerate(self.observedTrajectories):        
-                for row_idx, row_name in enumerate(whatToPlot):
-                    if row_name in self._gain_names:
-                        continue
-                    r_idx, g_idx = self.readable_names_to_realm_derivative_indices[row_name]
-                    if useTime:
-                        y = values[:,r_idx,:,g_idx]
-                        for col_idx, dof in enumerate(dofs_to_plot):
-                            axesArray[ row_idx, col_idx].plot(times, y[:,dof], alpha=alpha, linewidth=linewidth, color=observedColor )
-                    else:
-                        scalerA = (times[-1] - times[0])
-                        scaler = 1.0 / phases_observation[:,1]
-                        print(scaler/scalerA)
-                        if phases_observation.shape[1] > g_idx:   #only plot in phase if we have phase derivatives to scale observations with 
-                            if g_idx > 0:
-                                y = values[:,r_idx,:,g_idx] * (scaler[:,None]**g_idx)
-                            else:
-                                y = values[:,r_idx,:,g_idx]
-                            for col_idx, dof in enumerate(dofs_to_plot):
-                                axesArray[ row_idx, col_idx].plot(phases_observation[:,0], y[:,dof], alpha=alpha, linewidth=linewidth, color=observedColor )
-
 
 
         #set ylimits to be equal in each row and xlimits to be equal everywhere
@@ -594,6 +577,29 @@ meansMatrix
                     yticks, yticklabels = tuple(zip(*sorted(zip(yticks, yticklabels))))
                     ax.set_yticks(yticks)
                     ax.set_yticklabels(yticklabels)
+
+        if 'observedTrajectories' in self.__dict__: #plot observations after scaling y axes
+            for observation_idx, (times, phases_observation, values, Xrefs, Yrefs, Ts) in enumerate(self.observedTrajectories):        
+                for row_idx, row_name in enumerate(whatToPlot):
+                    if row_name in self._gain_names:
+                        continue
+                    r_idx, g_idx = self.readable_names_to_realm_derivative_indices[row_name]
+                    if useTime:
+                        y = values[:,r_idx,:,g_idx]
+                        for col_idx, dof in enumerate(dofs_to_plot):
+                            axesArray[ row_idx, col_idx].plot(times, y[:,dof], alpha=alpha, linewidth=linewidth, color=observedColor )
+                    else:
+                        if phases_observation.shape[1] > g_idx:   #only plot in phase if we have phase derivatives to scale observations with 
+                            if g_idx > 0:
+                                scaler = 1.0 / phases_observation[:,1]
+                                y = values[:,r_idx,:,g_idx] * (scaler[:,None]**g_idx)
+                            else:
+                                y = values[:,r_idx,:,g_idx]
+                            for col_idx, dof in enumerate(dofs_to_plot):
+                                axesArray[ row_idx, col_idx].plot(phases_observation[:,0], y[:,dof], alpha=alpha, linewidth=linewidth, color=observedColor )
+
+
+
 
         for ax in axesArray[:,0]:
 #             ax.set_ylabel(units[row_name])
@@ -735,17 +741,29 @@ meansMatrix
         #_plt.tight_layout()
 
 
-    def plotLearningProgress(self):
-        """
-        plot a graph of the learning progress, as determined by the negative log-likelihood over the training data
-        """
-        if not 'negLLHistory' in self.__dict__:
-            raise RuntimeWarning("No learning has happened - cannot plot progress.")
-        _plt.figure()
-        _plt.plot(self.negLLHistory)
-        _plt.xlabel("Iteration")
-        _plt.ylabel("-log( p(data|W) )")
-        _plt.ylim(0, 10 * _np.mean(self.negLLHistory[-10:]))
+    def plotExpectedPhase(self):
+        fig = _plt.figure()
+        x = _np.linspace(0.0, 1.0, 200)
+        y = _kumaraswamy.cdf(self.expected_phase_profile_params[0],self.expected_phase_profile_params[1],x)
+        _plt.plot(self.expected_duration*x,y)
+        _plt.xlabel('Time')
+        _plt.ylabel('Phase')
+        if 'observed_phaseprofiles' in self.__dict__:    
+            _plt.plot(self.expected_duration*self.observed_phaseprofiles[:,0], self.observed_phaseprofiles[:,1], '.', color='black')        
+        _plt.tight_layout()
+        return fig
+
+#    def plotLearningProgress(self):
+#        """
+#        plot a graph of the learning progress, as determined by the negative log-likelihood over the training data
+#        """
+#        if not 'negLLHistory' in self.__dict__:
+#            raise RuntimeWarning("No learning has happened - cannot plot progress.")
+#        _plt.figure()
+#        _plt.plot(self.negLLHistory)
+#        _plt.xlabel("Iteration")
+#        _plt.ylabel("-log( p(data|W) )")
+#        _plt.ylim(0, 10 * _np.mean(self.negLLHistory[-10:]))
 
         
     def learnFromObservations(self, 
@@ -887,179 +905,198 @@ meansMatrix
                 
         self.expected_duration = _np.mean([times[-1] for(times, phases, values, Xrefs, Yrefs, Ts) in observations])
         
+        
+        #estimate a phase profile too:
+        n_total = _np.sum([phases.shape[0] for times, phases, values, Xrefs, Yrefs, Ts in observations])
+        xy = _np.empty((n_total, 2))
+        current_i = 0
+        for times, phases, values, Xrefs, Yrefs, Ts in observations:
+            next_i  = current_i + phases.shape[0]
+            duration = (times[-1]-times[0]) #this is a heuristic - we could also optimize this to improve phase alignments
+            xy[current_i:next_i,0] = times / duration
+            xy[current_i:next_i,1] = phases[:,0]
+            current_i  = next_i
+            
+        a,b,error,iterations = _kumaraswamy.approximate(xy, accuracy=1e-4, max_iterations=10000)
+        if error > 1e-2:
+            raise RuntimeWarning("Large error when estimating phase profile: {}".format(error))        
+        self.expected_phase_profile_params = (a,b)
+        
+        self.observed_phaseprofiles = xy
+        
         self.observedTrajectories = observations #remember the data we learned from, for plotting etc.
         self.negLLHistory = negLLHistory
         
 
-    def learnFromObservationsEM(self, 
-            observations,
-            max_iterations=100, 
-            minimal_relative_improvement=1e-4,
-            minimal_absolute_negll=1e-9,
-            ):
-        """
-        
-        compute parameters from a list of observations
-        
-        Observations are tuples of (times, phases, values, Xrefs, Yrefs) tensors (data arrays)
-        
-        phases: Generalized phases of shape (n, 'd')
-        means: observed values at the given phases, of shape (n, 'd', 'g')
-        Xref, Yref: Task space linearization references, of shape (n, 'rtilde', 'dtilde', 'gtilde', 'stilde' ) and (n, 'r', 'd', 'g') respectively
-        #
+#    def learnFromObservationsEM(self, 
+#            observations,
+#            max_iterations=100, 
+#            minimal_relative_improvement=1e-4,
+#            minimal_absolute_negll=1e-9,
+#            ):
+#        """
+#        
+#        compute parameters from a list of observations
+#        
+#        Observations are tuples of (times, phases, values, Xrefs, Yrefs) tensors (data arrays)
+#        
+#        phases: Generalized phases of shape (n, 'd')
+#        means: observed values at the given phases, of shape (n, 'd', 'g')
+#        Xref, Yref: Task space linearization references, of shape (n, 'rtilde', 'dtilde', 'gtilde', 'stilde' ) and (n, 'r', 'd', 'g') respectively
+#        #
 
-        useonly: only use the combination of (realm, derivative) to learn, assume that in all other combinations data are not trustworthy
-       
-        stabilize: value in range 0-1, 0 does does full EM updates, nonzero values slow down convergence but improve stability
-       
-        Implements the expectation-maximization procedure of the paper "Using probabilistic movement primitives in robotics" by Paraschos et al.
-        """
-        pool = _multiprocessing.Pool()        
-        
-        sample_subsetsize = 8
-        
-        tns_perSample = self.tns.copy()
-        # observations may not have used the task space computer - set T and Xref from data
-        tns_perSample.update_order.remove('T,Xref')
-        #truncate equations that we do not need to compute:
-        tns_perSample.update_order = tns_perSample.update_order[:tns_perSample.update_order.index('PSI')+1]
-        
-        self.tns_perSample = tns_perSample
-        #we only need to compute until we have PSI:
-        tns_Observations =[]
-        self.tns_Observations = tns_Observations
+#        useonly: only use the combination of (realm, derivative) to learn, assume that in all other combinations data are not trustworthy
+#       
+#        stabilize: value in range 0-1, 0 does does full EM updates, nonzero values slow down convergence but improve stability
+#       
+#        Implements the expectation-maximization procedure of the paper "Using probabilistic movement primitives in robotics" by Paraschos et al.
+#        """
+#        pool = _multiprocessing.Pool()        
+#        
+#        sample_subsetsize = 8
+#        
+#        tns_perSample = self.tns.copy()
+#        # observations may not have used the task space computer - set T and Xref from data
+#        tns_perSample.update_order.remove('T,Xref')
+#        #truncate equations that we do not need to compute:
+#        tns_perSample.update_order = tns_perSample.update_order[:tns_perSample.update_order.index('PSI')+1]
+#        
+#        self.tns_perSample = tns_perSample
+#        #we only need to compute until we have PSI:
+#        tns_Observations =[]
+#        self.tns_Observations = tns_Observations
 
-        for observation_idx, (times, phases, values, Xrefs, Yrefs, Ts) in enumerate(observations):
-            #samplesubset = _np.arange(phases.shape[0])
-            for j in range(10):
-#                samplesubset = _np.arange(0, phases.shape[0], phases.shape[0]//5)
-                samplesubset = _np.random.choice(phases.shape[0], sample_subsetsize, replace=False)
-                
-                tns_perObservation = _namedtensors.TensorNameSpace(self.tns)
-                tns_Observations.append(tns_perObservation)            
-                #tns_perObservation.registerIndex('i', phases.shape[0])        
-                tns_perObservation.registerIndex('samples', sample_subsetsize)        
+#        for observation_idx, (times, phases, values, Xrefs, Yrefs, Ts) in enumerate(observations):
+#            #samplesubset = _np.arange(phases.shape[0])
+#            for j in range(10):
+##                samplesubset = _np.arange(0, phases.shape[0], phases.shape[0]//5)
+#                samplesubset = _np.random.choice(phases.shape[0], sample_subsetsize, replace=False)
+#                
+#                tns_perObservation = _namedtensors.TensorNameSpace(self.tns)
+#                tns_Observations.append(tns_perObservation)            
+#                #tns_perObservation.registerIndex('i', phases.shape[0])        
+#                tns_perObservation.registerIndex('samples', sample_subsetsize)        
 
-                tns_perObservation.registerTensor('Yhat', (('samples','r', 'd', 'g'),()))
-                tns_perObservation.registerTensor('PSIhat', (('samples','r', 'd', 'g'), ('rtilde', 'dtilde','gtilde', 'stilde')))
-                tns_perObservation.registerTensor('Wmean', self.tns.tensorIndices['Wmean'])
-                tns_perObservation.registerTensor('Wcov', self.tns.tensorIndices['Wcov'], initial_values='identity')
+#                tns_perObservation.registerTensor('Yhat', (('samples','r', 'd', 'g'),()))
+#                tns_perObservation.registerTensor('PSIhat', (('samples','r', 'd', 'g'), ('rtilde', 'dtilde','gtilde', 'stilde')))
+#                tns_perObservation.registerTensor('Wmean', self.tns.tensorIndices['Wmean'])
+#                tns_perObservation.registerTensor('Wcov', self.tns.tensorIndices['Wcov'], initial_values='identity')
 
-                #likelihood estimators:
-                tns_perObservation.registerTranspose('PSIhat')
-                tns_perObservation.registerContraction('PSIhat', 'Wcov')
-                tns_perObservation.registerContraction('PSIhat:Wcov', '(PSIhat)^T', result_name='Ycov')
-                tns_perObservation.registerInverse('Ycov', result_name='Ycovinv', flip_underlines=False)
-                tns_perObservation.registerContraction('(PSIhat)^T', 'Ycovinv')
-                tns_perObservation.registerContraction('(PSIhat)^T:Ycovinv','PSIhat', result_name='Wcovinv')
+#                #likelihood estimators:
+#                tns_perObservation.registerTranspose('PSIhat')
+#                tns_perObservation.registerContraction('PSIhat', 'Wcov')
+#                tns_perObservation.registerContraction('PSIhat:Wcov', '(PSIhat)^T', result_name='Ycov')
+#                tns_perObservation.registerInverse('Ycov', result_name='Ycovinv', flip_underlines=False)
+#                tns_perObservation.registerContraction('(PSIhat)^T', 'Ycovinv')
+#                tns_perObservation.registerContraction('(PSIhat)^T:Ycovinv','PSIhat', result_name='Wcovinv')
 
-                #estimate likely mean:
-                tns_perObservation.registerContraction('PSIhat', 'Wmean')
-                tns_perObservation.registerSubtraction('Yhat', 'PSIhat:Wmean', result_name='Yerror')
-                tns_perObservation.registerContraction('Ycovinv', 'Yerror')
-                tns_perObservation.registerContraction('(PSIhat)^T', 'Ycovinv:Yerror', flip_underlines=True, result_name='deltaWmeanestimate')
-                tns_perObservation.registerAddition('Wmean', 'deltaWmeanestimate', result_name='Wmeanestimate')
-                #estimate likely covariance:
-                tns_perObservation.registerContraction('Wcovinv', 'Wcov')            
-                tns_perObservation.registerTranspose('Wcov')
-                tns_perObservation.registerContraction('(Wcov)^T', 'Wcovinv:Wcov')           
-                tns_perObservation.registerSubtraction('Wcov', '(Wcov)^T:Wcovinv:Wcov', result_name='Wcovestimate') 
-                
-                #compute negative-log-likelihood increment to judge progress:
-                tns_perObservation.registerTranspose('Yerror')
-                tns_perObservation.registerContraction('(Yerror)^T', 'Ycovinv:Yerror' , result_name ='negLLDelta')
+#                #estimate likely mean:
+#                tns_perObservation.registerContraction('PSIhat', 'Wmean')
+#                tns_perObservation.registerSubtraction('Yhat', 'PSIhat:Wmean', result_name='Yerror')
+#                tns_perObservation.registerContraction('Ycovinv', 'Yerror')
+#                tns_perObservation.registerContraction('(PSIhat)^T', 'Ycovinv:Yerror', flip_underlines=True, result_name='deltaWmeanestimate')
+#                tns_perObservation.registerAddition('Wmean', 'deltaWmeanestimate', result_name='Wmeanestimate')
+#                #estimate likely covariance:
+#                tns_perObservation.registerContraction('Wcovinv', 'Wcov')            
+#                tns_perObservation.registerTranspose('Wcov')
+#                tns_perObservation.registerContraction('(Wcov)^T', 'Wcovinv:Wcov')           
+#                tns_perObservation.registerSubtraction('Wcov', '(Wcov)^T:Wcovinv:Wcov', result_name='Wcovestimate') 
+#                
+#                #compute negative-log-likelihood increment to judge progress:
+#                tns_perObservation.registerTranspose('Yerror')
+#                tns_perObservation.registerContraction('(Yerror)^T', 'Ycovinv:Yerror' , result_name ='negLLDelta')
 
 
-                tns_perObservation.equationsForEstimation = tns_perObservation.update_order.copy()
-                tns_perObservation.update_order = []
+#                tns_perObservation.equationsForEstimation = tns_perObservation.update_order.copy()
+#                tns_perObservation.update_order = []
 
-                tns_perObservation.registerTensor('deltaWmeanprime', tns_perObservation.tensorIndices['Wmeanestimate'])
+#                tns_perObservation.registerTensor('deltaWmeanprime', tns_perObservation.tensorIndices['Wmeanestimate'])
 
-                tns_perObservation.registerSubtraction('deltaWmeanestimate', 'deltaWmeanprime', result_name='deltaWprime')
-                tns_perObservation.registerTranspose('deltaWprime')
-                
-                tns_perObservation.registerContraction('deltaWprime', '(deltaWprime)^T', result_name='Wcovempirical')
-                #tns_perObservation.registerAddition('Wcovempirical', 'Wcovestimate', 'Wcovprime' ) 
-                tns_perObservation.registerSubtraction('Wcovempirical', '(Wcov)^T:Wcovinv:Wcov', result_name='deltaWcovprime' ) 
-                tns_perObservation.equationsForWcovprime = tns_perObservation.update_order.copy()
+#                tns_perObservation.registerSubtraction('deltaWmeanestimate', 'deltaWmeanprime', result_name='deltaWprime')
+#                tns_perObservation.registerTranspose('deltaWprime')
+#                
+#                tns_perObservation.registerContraction('deltaWprime', '(deltaWprime)^T', result_name='Wcovempirical')
+#                #tns_perObservation.registerAddition('Wcovempirical', 'Wcovestimate', 'Wcovprime' ) 
+#                tns_perObservation.registerSubtraction('Wcovempirical', '(Wcov)^T:Wcovinv:Wcov', result_name='deltaWcovprime' ) 
+#                tns_perObservation.equationsForWcovprime = tns_perObservation.update_order.copy()
 
-                #preprocess samples into pairs of Yhat and PSIhat for each observation:
-                for i, sample in enumerate(samplesubset):
-                    #compute PSIi:
-                    tns_perSample.setTensor('T', Ts[sample,:,:,:,:], (('r', 'd'),('rtilde', 'dtilde')) )
-                    tns_perSample.setTensor('Xref', Xrefs[sample,:,:,:], (('rtilde', 'dtilde', 'g'),()) ) 
-                    tns_perSample.setTensor('phase', phases[sample,:], (('g'),()) )
-                    tns_perSample.setTensor('Yref', Yrefs[sample,:,:,:], (('r', 'd', 'g'),()) )                
-                    tns_perSample.update()
-                    slice_indices = (tns_perObservation.tensorIndices['PSIhat'][0][1:],tns_perObservation.tensorIndices['PSIhat'][1])
-                    psi_aligned = tns_perObservation._alignDimensions(slice_indices, tns_perSample.tensorIndices['PSI'], tns_perSample.tensorData['PSI'])
-                    _np.copyto(tns_perObservation.tensorData['PSIhat'][i,...], psi_aligned) #aggregate data into PSIhat
-                    _np.copyto(tns_perObservation.tensorData['Yhat'][i,...], values[i,...]) #aggregate values into Yhat
+#                #preprocess samples into pairs of Yhat and PSIhat for each observation:
+#                for i, sample in enumerate(samplesubset):
+#                    #compute PSIi:
+#                    tns_perSample.setTensor('T', Ts[sample,:,:,:,:], (('r', 'd'),('rtilde', 'dtilde')) )
+#                    tns_perSample.setTensor('Xref', Xrefs[sample,:,:,:], (('rtilde', 'dtilde', 'g'),()) ) 
+#                    tns_perSample.setTensor('phase', phases[sample,:], (('g'),()) )
+#                    tns_perSample.setTensor('Yref', Yrefs[sample,:,:,:], (('r', 'd', 'g'),()) )                
+#                    tns_perSample.update()
+#                    slice_indices = (tns_perObservation.tensorIndices['PSIhat'][0][1:],tns_perObservation.tensorIndices['PSIhat'][1])
+#                    psi_aligned = tns_perObservation._alignDimensions(slice_indices, tns_perSample.tensorIndices['PSI'], tns_perSample.tensorData['PSI'])
+#                    _np.copyto(tns_perObservation.tensorData['PSIhat'][i,...], psi_aligned) #aggregate data into PSIhat
+#                    _np.copyto(tns_perObservation.tensorData['Yhat'][i,...], values[i,...]) #aggregate values into Yhat
 
-        
+#        
 
-        #now do expectation-maximization:
-        relative_ll_changes = 1.0
-        
-        self.tns.setTensor('Wmean', 0.0)
-        self.tns.setTensorToIdentity('Wcov', scale=100)
-        negLLHistory = []
-        for iteration_count in range(max_iterations):
-            iteration_count = iteration_count+1        
-            
-            #set priors for each observation estimator:
-            for tns_perObservation in  tns_Observations:
-                tns_perObservation.setTensor('Wmean', self.tns.tensorData['Wmean'], self.tns.tensorIndices['Wmean'])
-                tns_perObservation.setTensor('Wcov',  self.tns.tensorData['Wcov'], self.tns.tensorIndices['Wcov'])
-                
-            #compute most likely values: (E-step)
-            #pool.map(_estimation_step, tns_Observations)
-            #map(_estimation_step, tns_Observations)
-            [tns_local.update(*tns_local.equationsForEstimation) for tns_local in tns_Observations]
+#        #now do expectation-maximization:
+#        relative_ll_changes = 1.0
+#        
+#        self.tns.setTensor('Wmean', 0.0)
+#        self.tns.setTensorToIdentity('Wcov', scale=100)
+#        negLLHistory = []
+#        for iteration_count in range(max_iterations):
+#            iteration_count = iteration_count+1        
+#            
+#            #set priors for each observation estimator:
+#            for tns_perObservation in  tns_Observations:
+#                tns_perObservation.setTensor('Wmean', self.tns.tensorData['Wmean'], self.tns.tensorIndices['Wmean'])
+#                tns_perObservation.setTensor('Wcov',  self.tns.tensorData['Wcov'], self.tns.tensorIndices['Wcov'])
+#                
+#            #compute most likely values: (E-step)
+#            #pool.map(_estimation_step, tns_Observations)
+#            #map(_estimation_step, tns_Observations)
+#            [tns_local.update(*tns_local.equationsForEstimation) for tns_local in tns_Observations]
 
-            #maximize mean based on likely values  (M-step)
-            deltaWmeanprime = _np.mean([tns_perObservation.tensorData['deltaWmeanestimate'] for tns_perObservation in tns_Observations], axis=0)
-            deltaWmeanprime_indices = tns_Observations[0].tensorIndices['deltaWmeanestimate']
+#            #maximize mean based on likely values  (M-step)
+#            deltaWmeanprime = _np.mean([tns_perObservation.tensorData['deltaWmeanestimate'] for tns_perObservation in tns_Observations], axis=0)
+#            deltaWmeanprime_indices = tns_Observations[0].tensorIndices['deltaWmeanestimate']
 
-            negLLDeltaSum = _np.mean([tns_perObservation.tensorData['negLLDelta'] for tns_perObservation in tns_Observations], axis=0)
-            print(negLLDeltaSum)
+#            negLLDeltaSum = _np.mean([tns_perObservation.tensorData['negLLDelta'] for tns_perObservation in tns_Observations], axis=0)
+#            print(negLLDeltaSum)
 
-            #maximize covariance based on likely values   (M-step 2nd part)
-            for tns_perObservation in tns_Observations:
-                tns_perObservation.setTensor('deltaWmeanprime', deltaWmeanprime, deltaWmeanprime_indices)
-                tns_perObservation.update(*tns_perObservation.equationsForWcovprime)
-                print(tns_perObservation.tensorDataAsFlattened['deltaWprime'])
-            
-            deltaWcovprime = _np.mean([tns_perObservation.tensorData['Wcovempirical'] for tns_perObservation in tns_Observations], axis=0)
-            deltaWcovprime_indices = tns_Observations[0].tensorIndices['Wcovempirical']
+#            #maximize covariance based on likely values   (M-step 2nd part)
+#            for tns_perObservation in tns_Observations:
+#                tns_perObservation.setTensor('deltaWmeanprime', deltaWmeanprime, deltaWmeanprime_indices)
+#                tns_perObservation.update(*tns_perObservation.equationsForWcovprime)
+#                print(tns_perObservation.tensorDataAsFlattened['deltaWprime'])
+#            
+#            deltaWcovprime = _np.mean([tns_perObservation.tensorData['Wcovempirical'] for tns_perObservation in tns_Observations], axis=0)
+#            deltaWcovprime_indices = tns_Observations[0].tensorIndices['Wcovempirical']
 
-            #Wcovprime = 0.5 * ( Wcovprime + _np.transpose(Wcovprime, axes=(4,5,6,7,0,1,2,3)))
-            #save new maximized parameters:
-            self.tns.addToTensor('Wmean', deltaWmeanprime, deltaWmeanprime_indices)
-            self.tns.addToTensor('Wcov', deltaWcovprime, deltaWcovprime_indices)
-            print(_np.max(deltaWcovprime), _np.min(deltaWcovprime))
-            
-            negLLHistory.append(negLLDeltaSum)
-            
-            #terminate early if neg-log-likelihood of observations stops increasing:
-            #if negLLDeltaSum < minimal_absolute_negll:
-            #    print("stopping early at iteration {}".format(iteration_count))            
-            #    break
-            n= 4
-            if len(negLLHistory) > n:
-                relative_ll_changes = [abs((negLLHistory[-i]-negLLHistory[-i-1])/negLLHistory[-i-1]) for i in range(1,n) ]
-                eigenvalues = _np.linalg.eigvals(self.tns.tensorDataAsFlattened['Wcov'])
-                if _np.any(_np.iscomplex(eigenvalues)) or _np.any(eigenvalues < 0.0):                    
-                    print("Warning: At iteration {} eigenvalues became {} ".format(iteration_count, eigenvalues))
-                print("change: {:.4}".format(relative_ll_changes[0]))
-                if max(relative_ll_changes) < minimal_relative_improvement:
-                    print("stopping early at iteration {}".format(iteration_count))
-                    break
-                    
-        self.negLLHistory = _np.array(negLLHistory)
-        self.expected_duration = _np.mean([times[-1] for(times, phases, values, Xrefs, Yrefs, Ts) in observations])
+#            #Wcovprime = 0.5 * ( Wcovprime + _np.transpose(Wcovprime, axes=(4,5,6,7,0,1,2,3)))
+#            #save new maximized parameters:
+#            self.tns.addToTensor('Wmean', deltaWmeanprime, deltaWmeanprime_indices)
+#            self.tns.addToTensor('Wcov', deltaWcovprime, deltaWcovprime_indices)
+#            print(_np.max(deltaWcovprime), _np.min(deltaWcovprime))
+#            
+#            negLLHistory.append(negLLDeltaSum)
+#            
+#            #terminate early if neg-log-likelihood of observations stops increasing:
+#            #if negLLDeltaSum < minimal_absolute_negll:
+#            #    print("stopping early at iteration {}".format(iteration_count))            
+#            #    break
+#            n= 4
+#            if len(negLLHistory) > n:
+#                relative_ll_changes = [abs((negLLHistory[-i]-negLLHistory[-i-1])/negLLHistory[-i-1]) for i in range(1,n) ]
+#                eigenvalues = _np.linalg.eigvals(self.tns.tensorDataAsFlattened['Wcov'])
+#                if _np.any(_np.iscomplex(eigenvalues)) or _np.any(eigenvalues < 0.0):                    
+#                    print("Warning: At iteration {} eigenvalues became {} ".format(iteration_count, eigenvalues))
+#                print("change: {:.4}".format(relative_ll_changes[0]))
+#                if max(relative_ll_changes) < minimal_relative_improvement:
+#                    print("stopping early at iteration {}".format(iteration_count))
+#                    break
+#                    
+#        self.negLLHistory = _np.array(negLLHistory)
+#        self.expected_duration = _np.mean([times[-1] for(times, phases, values, Xrefs, Yrefs, Ts) in observations])
 
-        self.observedTrajectories = observations #remember the data we learned from, for plotting etc.
+#        self.observedTrajectories = observations #remember the data we learned from, for plotting etc.
 
 
 

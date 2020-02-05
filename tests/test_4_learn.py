@@ -39,12 +39,8 @@ num = 30
 kv = _np.array((0.0, 0.0))
 kp = _np.array((10.0, 1.0))
 observations = []
-free_variables = []
 for i in range(30):
-    duration = 2.0 + _np.random.normal()
-    offset = 1000 * _np.random.normal()
-    free_variables.append((offset))
-    
+    duration = 2.0# + _np.random.normal()
     observed_times = _np.linspace(0, duration, num)
     observed_dts =  ( observed_times[1:] - observed_times[:-1] )
     observed_phases = _np.zeros((num, len_derivs))              # num, g
@@ -56,17 +52,17 @@ for i in range(30):
     d_idx = 0
 
     #set some notrivial phase profile:
-    #observed_phases[:,0] = _kumaraswamy.cdf(1.0,1.0,_np.linspace(0, 1.0, num))    
-    observed_phases[:,0] = _np.linspace(0, 1.0, num)   
+    observed_phases[:,0] = _kumaraswamy.cdf(1.45,1.68,_np.linspace(0, 1.0, num))    
+    #observed_phases[:,0] = _np.linspace(0, 1.0, num)   
     if len_derivs > 1:
         observed_phases[:,1] = _np.gradient(observed_phases[:,0]) / _np.gradient(observed_times)
     
     observed_phases = observed_phases + 0.01 * _np.random.normal(size=(num, 1))
-    velocities = 1.0 * (1.0 + _np.random.normal(size=num) / _np.sqrt(num))
-    positions = _scipy.integrate.cumtrapz(velocities, x=observed_times, initial=0.0) + offset
+    velocities = 3.0 * _np.cos(2*observed_times)
+    positions = _scipy.integrate.cumtrapz(velocities, x=observed_times, initial=0.0)
 
-    torques   = 1.0 * _np.random.normal(size=num) + 1000 * _np.random.normal() #- 1*offset
-    impulses  = _scipy.integrate.cumtrapz(torques, x=observed_times)
+    torques   = -0 * positions -15 * velocities
+    impulses  = _scipy.integrate.cumtrapz(torques, x=observed_times, initial=0.0)
 
     #fill into values array:
     data = {
@@ -92,12 +88,12 @@ for i in range(30):
 p.learnFromObservations(observations, max_iterations=10)
 p.saveToFile(path='./temp')
 
-p.plotLearningProgress()
 
 p.plot()
 p.plot(useTime=False)
 
 p.plotCovarianceTensor()
+p.plotExpectedPhase()
 
 if __name__=='__main__':
     import os
