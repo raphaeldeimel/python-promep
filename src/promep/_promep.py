@@ -24,8 +24,10 @@ import multiprocessing as _multiprocessing
 import random as _random
 
 from promep import *
+import mechanicalstate  as _mechanicalstate
+import namedtensors as _namedtensors
 
-from . import _namedtensors, _interpolationkernels, _mechanicalstate, _taskspaces, _kumaraswamy
+from . import _trajectorycompositors, _kumaraswamy
 
 from  scipy.special import betainc as _betainc
 from sklearn import covariance as _sklearncovariance
@@ -69,8 +71,8 @@ class ProMeP(object):
                  name="unnamed", 
                  expected_duration=1.0, 
                  expected_phase_profile_params=(1.0, 1.0),  #parameters of a Kumaraswamy distribution
-                 PHI_computer_cls=_interpolationkernels.InterpolationGaussian,   #class to compute the PHI tensor with 
-                 T_computer_cls=_taskspaces.JointSpaceToJointSpaceTransform,                 #class to compute the T tensor with
+                 task_space_name = 'jointspace',
+                 trajectory_composition_method='gaussians'
         ):
         """
             index_sizes: dictionary containing the sizes of all internal indices:
@@ -169,28 +171,18 @@ class ProMeP(object):
             else:
                   self.tns.registerIndex(name, self.index_sizes[name], values = list(range(self.index_sizes[name])))
 
-        #human-readable names for (realm, derivative) index combinations:
-        motion_names = ('position', 'velocity', 'acceleration', 'jerk')
-        effort_names = ('int_int_torque', 'impulse', 'torque', 'torque_rate')
-        if self.index_sizes['g'] < 3:   #if less than 3 derivatives are computed, make sure that torque stays represented:
-            self.gtilde_effort_shiftvalue = 3-self.index_sizes['g'] #remember by how much gtilde for effort is shifted
-            effort_names = effort_names[self.gtilde_effort_shiftvalue:]
-        else:
-            self.gtilde_effort_shiftvalue = 0
+        #get a mapping from human-readable names to indices of m-state distributions
+        msd_reference = MechanicalStateDistribution(index_sizes)
+        self.readable_names_to_realm_derivative_indices = msd_reference.readable_names_to_realm_derivative_indices
 
-        #set up translation dict from human-readable names to indices used within the promep data structures:
-        d={}
         self._gain_names = set()
-        for g_idx in range(self.index_sizes['g']):
-            d[motion_names[g_idx]] = (0,g_idx)
-            d[effort_names[g_idx]] = (1,g_idx)
-        if 'torque' in d and 'position' in d:
-            d['kp'] = (d['torque'][1], d['position'][1])  #gains get the derivative indices of effort&motion
-            self._gain_names.add('kp')
-        if 'torque' in d and 'velocity' in d:
-            d['kv'] = (d['torque'][1], d['velocity'][1])
-            self._gain_names.add('kv')
-        self.readable_names_to_realm_derivative_indices = d
+        for gain_name in ('kp', 'kv'):
+            if gain_name in self.readable_names_to_realm_derivative_indices:
+                self._gain_names.add('kp')
+        
+        self.trajectory_composition_method = trajectory_composition_method
+
+        self.task_space_name = task_space_name
 
         ##define the computational graph:
 
@@ -199,12 +191,25 @@ class ProMeP(object):
         self.tns.registerTensor('phase', (('g',),()) )  #generalized phase vector        
         self.tns.registerTensor('Wmean', (('rtilde','gtilde','stilde','dtilde'),()) )
         self.tns.registerTensor('Wcov', (( 'rtilde','gtilde','stilde','dtilde'),( 'rtilde_','gtilde_','stilde_','dtilde_')) )
-        self.tns.registerExternalFunction(PHI_computer_cls().update, ['phase'], ['PHI'],  [(('gphi',),('stilde',))])
-        self.tns.registerExternalFunction(_updateP, ['phase'], ['P'],  [(('g',),('gphi','gtilde'))] )
 
-        #tensors involved in taskspace mapping:
-        self.tns.registerTensor('Yref', (('r','d','g',),()) )     #T_computer input
-        self.tns.registerExternalFunction( T_computer_cls().update, ['Yref'], ['T', 'Xref',],  [(('r','d'),('rtilde', 'dtilde')), (('rtilde', 'dtilde', 'g'),()) ] )
+        #set which trajectory composition method generates PHI?
+        if self.trajectory_composition_method=='gaussians':
+            PHI_computer=_trajectorycompositors.TrajectoryCompositorGaussian(),   #Currently, we have only one method
+            self.tns.registerExternalFunction(PHI_computer.update, ['phase'], ['PHI'],  [(('gphi',),('stilde',))])
+        else:
+            raise NotImplementedError()        
+
+        #set function to compute chain derivatives (P tensor):
+        self.tns.registerExternalFunction(_updateP, ['phase'], ['P'],  [(('g',),('gphi','gtilde'))] )
+        
+        #set up tensors involved in taskspace mapping:
+        self.tns.registerTensor('Yref', (('r','d','g',),()) )     
+        self.tns.registerTensor('Xref',  (('rtilde', 'dtilde', 'g'),()) )    
+        self.tns.registerTensor('T',   (('r','d'),('rtilde', 'dtilde')) ) 
+        if self.task_space_name=='jointspace':
+            self.tns.setTensorToIdentity('T')
+
+        
         self.tns.registerContraction('T', 'Xref')  
         self.tns.registerSubtraction('Yref', 'T:Xref', result_name = 'O')  # observations may not have used the task space computer - set manually
 
@@ -272,6 +277,8 @@ class ProMeP(object):
         serializedDict[u'Wcov'] = self.tns.tensorData['Wcov']
         serializedDict[u'expected_duration'] = self.expected_duration
         serializedDict[u'expected_phase_profile_params'] = self.expected_phase_profile_params
+        serializedDict[u'trajectory_composition_method'] = self.trajectory_composition_method
+        serializedDict[u'task_space_name'] = self.task_space_name
         
         return serializedDict
 
@@ -293,7 +300,9 @@ class ProMeP(object):
             'Wcov': serializedDict[u'Wcov'],
             'name': serializedDict[u'name'],
             'expected_duration':  serializedDict[u'expected_duration'], 
-            'expected_phase_profile_params': serializedDict[u'expected_phase_profile_params']
+            'expected_phase_profile_params': serializedDict[u'expected_phase_profile_params'],
+            'trajectory_composition_method': serializedDict[u'trajectory_composition_method'],
+            'task_space_name': serializedDict[u'task_space_name'],
         }
         return cls(**kwargs)
         
@@ -359,23 +368,26 @@ meansMatrix
 
 
 
-    def getDistribution(self, generalized_phase=None, currentDistribution=None):
+    def getDistribution(self, * , generalized_phase=None, current_msd=None, task_spaces={}):
         """
         return the distribution of the (possibly multidimensional) state at the given phase
            for now, it returns the parameters (means, derivatives) of a univariate gaussian
 
-            generalized_phase: at which phase and its derivatives the distribution should be computed
+            generalized_phase: generalized phase to compute the distribution for
                         
-            currentDistribution: not used by ProMP
+            currentDistribution: not used
+            
+            taskspaces: dictionary of task space mappings. May be used 
 
-            returns a MechanicalStateDistribution object          
+            returns a MechanicalStateDistribution object with the expected distribution     
 
         """
         self.tns.setTensor('phase', generalized_phase)
-        if currentDistribution is None:
-            self.tns.setTensor('Yref', 0.0)  #for joint-space as task space, we do not need to care
-        else:
-            self.tns.setTensor('Yref', currentDistribution.means) #but usually, set a linearization reference point for the T_computer
+        if self.task_space_name != 'jointspace':  #only update task space mappings if we actually need to
+            taskspacemapping_tensors = task_spaces[self.task_space_name]
+            self.tns.setTensor('Yref', taskspacemapping_tensors['Yref']) 
+            self.tns.setTensor('Xref', taskspacemapping_tensors['Xref']) 
+            self.tns.setTensor('T', taskspacemapping_tensors['T']) 
         #Now compute the actual ProMeP equation:
         self.tns.update()
 
@@ -410,7 +422,7 @@ meansMatrix
         self.tns.setTensor('Wmean', W)
         points_list = []   
         for i in range(num):
-            points_list.append(self.getDistribution(generalized_phases[i]).means)
+            points_list.append(self.getDistribution(generalized_phase=generalized_phases[i]).means)
         self.tns.setTensor('Wmean', Wmean_saved) #restore abused Wmean
         return _np.array(points_list)
 
@@ -434,9 +446,6 @@ meansMatrix
 
         E.g. usually, neighbouring via points show a high, positive correlation due to dynamic acceleration limits
 
-
-        interpolationKernel:  provide a function that defines the linear combination vector for interpolating the via points
-                                If set to None (default), promp.makeInterpolationKernel() is used to construct a Kernel as used in the ProMP definition
         """
         supportsColor = '#008888'
         confidenceColor = "#DDDDDD"
@@ -506,7 +515,7 @@ meansMatrix
         }
         generalized_phase =_np.zeros((self.tns.indexSizes['g']))            
         for i,phase in enumerate(phases):
-            dist =  self.getDistribution(phase)
+            dist =  self.getDistribution(generalized_phase=phase)
             for row_idx, row_name in enumerate(whatToPlot):
                 if row_name in data_gains:
                     gains  = dist.extractPDGains()
@@ -768,7 +777,6 @@ meansMatrix
         
     def learnFromObservations(self, 
             observations,
-            resample_times=10,
             max_iterations=10, 
             minimal_relative_improvement=1e-9,
             ):
@@ -776,7 +784,7 @@ meansMatrix
         
         compute parameters from a list of observations
         
-        Observations are tuples of (times, phases, values, Xrefs, Yrefs) tensors (data arrays)
+        Observations are tuples of  (times, phases, values, Xrefs, Yrefs, Ts) tensors (data arrays)
         
         phases: Generalized phases of shape (n, 'd')
         means: observed values at the given phases, of shape (n, 'd', 'g')
@@ -788,27 +796,49 @@ meansMatrix
         pool = _multiprocessing.Pool()        
         
         tns_perSample = self.tns.copy()
-        # observations may not have used the task space computer - set T and Xref from data
-        tns_perSample.update_order.remove('T,Xref')
         #truncate equations that we do not need to compute:
         tns_perSample.update_order = tns_perSample.update_order[:tns_perSample.update_order.index('PSI')+1]
+        #subtract the offset caused by the task map linearization when computing the per-sample data, so during learning we ignore Xref and Yref
+        tns_perSample.registerTensor('Yobserved', (('r','d','g'),()) )
+        tns_perSample.registerSubtraction('Yobserved', 'O', 'Yhatslice')
         
         self.tns_perSample = tns_perSample
         #we only need to compute until we have PSI:
         tns_Observations =[]
         self.tns_Observations = tns_Observations
 
+        #"precompute" the mapping from joint space to joint space:
+        T_jointspace =_np.eye( (self.tns.indexSizes['r']*self.tns.indexSizes['d']) )
+        T_jointspace.shape = (self.tns.indexSizes['r'],self.tns.indexSizes['d'],self.tns.indexSizes['rtilde'],self.tns.indexSizes['dtilde']) #r,d,rtilde, dtilde
         
-        for observation_idx, (times, phases, values, Xrefs, Yrefs, Ts) in enumerate(observations):            
+        for observation_idx, observation in enumerate(observations):            
+            import pandas as _pandas
+            if observation.isinstance(x, _pandas.DataFrame):
+                samples_total = len(observation.index)
+                data_shape = (samples, self.tns.indexSizes['r'],self.tns.indexSizes['d'],self.tns.indexSizes['g'])
+                values = _np.zeros(data_shape)
+                for name in self.readable_names_to_realm_derivative_indices: 
+                    r_idx, g_idx = self.readable_names_to_realm_derivative_indices[name]
+                    for d_idx in range(8):
+                        values[:, r_idx, d_idx, g_idx] = observation[ ('observed', name, d_idx) ]
+                times = observation['t']
+                phases = observation[['phi','dphidt','ddphidt2']]
+                #setup for joint-space learning:
+                Yrefs = _np.zeros(data_shape)   # or observation[ ('observed', 'position') ]
+                Xrefs = _np.zeros(data_shape)   # or observation[ ('observed', 'position') ]
+                Ts = _np.tile(T_jointspace, (samples,1,1,1,1))
+            else: #old interface: try to interprete it as tuple of arrays:
+                times, phases, values, Xrefs, Yrefs, Ts = observation
+                samples_total = phases.shape[0]
 
-            #split up all observed samples into random sets of a size that makes sense w.r.t. the interpolation parameters:
-            samples_total = phases.shape[0]
+            #compute how we partition the observation samples into subsets to reduce computational effort and increase the number of w samples available for covariance estimation:
             samplesetsize  = self.tns.indexSizes['stilde'] * 3  #no need to add much more samples than we have interpolation parameters over time
             partitions = samples_total // samplesetsize
             #construct an array of shuffled indices:
             sampleindices = _np.arange(partitions * samplesetsize)
             _np.random.shuffle(sampleindices)
             sampleindices.shape = (partitions, samplesetsize)
+
 
             for partition in range(partitions):
                 
@@ -833,7 +863,6 @@ meansMatrix
                 tns_perObservation.registerContraction('PSIhat', 'Wmean', result_name='Ymean')
                 tns_perObservation.registerSubtraction('Yhat', 'Ymean', result_name='Yerror')
                 tns_perObservation.registerContraction('(PSIhat)^#', 'Yerror', result_name='Werror', flip_underlines=True)
-
                            
                 tns_perObservation.registerTranspose('Werror')                
                 tns_perObservation.registerContraction('Werror', '(Werror)^T', result_name='Wcovprojected')
@@ -845,17 +874,17 @@ meansMatrix
                 #preprocess samples into pairs of Yhat and PSIhat for each observation:
                 for i, sample in enumerate(sampleindices[partition,:]):
                     #compute PSIi:
-                    tns_perSample.setTensor('T', Ts[sample,:,:,:,:], (('r', 'd'),('rtilde', 'dtilde')) )
-                    tns_perSample.setTensor('Xref', Xrefs[sample,:,:,:], (('rtilde', 'dtilde', 'g'),()) ) 
-                    tns_perSample.setTensor('phase', phases[sample,:], (('g'),()) )
-                    tns_perSample.setTensor('Yref', Yrefs[sample,:,:,:], (('r', 'd', 'g'),()) )                
+                    tns_perSample.setTensor('Xref',       Xrefs[sample,...], (('rtilde', 'dtilde', 'g'),()) ) 
+                    tns_perSample.setTensor('Yref',       Yrefs[sample,...], (('r', 'd', 'g'),()) )                
+                    tns_perSample.setTensor('T',             Ts[sample,...], (('r', 'd'),('rtilde', 'dtilde')) )
+                    tns_perSample.setTensor('phase',     phases[sample,...], (('g'),()) )
+                    tns_perSample.setTensor('Yobserved', values[sample,...], (('r', 'd', 'g'),()) )          
                     tns_perSample.update()
                     slice_indices = (tns_perObservation.tensorIndices['PSIhat'][0][1:],tns_perObservation.tensorIndices['PSIhat'][1])
                     psi_aligned = tns_perObservation._alignDimensions(slice_indices, tns_perSample.tensorIndices['PSI'], tns_perSample.tensorData['PSI'])
                     _np.copyto(tns_perObservation.tensorData['PSIhat'][i,...], psi_aligned) #aggregate data into PSIhat
-                    _np.copyto(tns_perObservation.tensorData['Yhat'][i,...], values[sample,...]) #aggregate values into Yhat
+                    _np.copyto(tns_perObservation.tensorData['Yhat'][i,...], tns_perSample.tensorData['Yhatslice']) #aggregate values into Yhat
 
-                
 
         #now do expectation-maximization:
         relative_ll_changes = 1.0
@@ -898,7 +927,7 @@ meansMatrix
             negLLHistory.append(rms)
 
             if rms < minimal_relative_improvement:
-                print("Mean converged early after {} iterations".format(iteration_count))
+                print("Converged Wmean after {} iterations".format(iteration_count))
                 break
         else:
                 print("Residual mean error (RMS) after {} iterations: {}".format(iteration_count, rms))

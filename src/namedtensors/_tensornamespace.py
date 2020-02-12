@@ -60,6 +60,7 @@ class TensorNameSpace(object):
         self.tensorDataAsFlattened = {} # flattened view on the actual array
         self.tensorShape = {}
         self.tensorShapeFlattened = {}
+        self.registeredScalars = {}
         self.registeredAdditions = {}
         self.registeredSubtractions = {}
         self.registeredScalarMultiplications = {}
@@ -191,7 +192,7 @@ class TensorNameSpace(object):
         
         if result_name is None:
             result_name = A + '*' + B
-
+            
         tuplesA = self.tensorIndices[A]
         tuplesB = self.tensorIndices[B]
         if tuplesA != tuplesB:
@@ -211,7 +212,10 @@ class TensorNameSpace(object):
     def registerScalarMultiplication(self, A, scalar, result_name=None, out_array=None):
         
         if result_name is None:
-            result_name = tensornameA + '*' + str(int(scalar))
+            result_name = tensornameA + '*' + scalar
+    
+        if self.tensorIndices[scalar] != ((),()):
+            raise ValueError("scalar argument needs to be a (0,0) tensor!")
     
         self.registerTensor(result_name, self.tensorIndices[A], external_array=out_array)        
         self.registeredScalarMultiplications[result_name] = (A, scalar)
@@ -473,24 +477,72 @@ class TensorNameSpace(object):
         _np.copyto(self.tensorData[name], values)
 
 
-    def setTensorSlice(self, name, values, sliced_indices, value_indexTuples):
+#    def setTensorSlice(self, name, values, sliced_indices, value_indexTuples):
+#        """
+#        write to a certain slice of the tensor
+#        
+#        Warnin: you need to make sure manually that index order is correct
+#        """
+#        if name not in self.tensorData:
+#            raise ValueError()
+#        if values is None:
+#            return
+#        slicedef = [slice(None)]* self.tensorData[name].ndim
+#        for index_name in sliced_indices:
+#            axis = self.tensorIndexPositionsAll[name][index_name]
+#            slicedef[axis] = sliced_indices[index_name]
+#        _np.copyto(self.tensorData[name][tuple(slicedef)], values)
+
+
+    def setTensorSlice(self, name, slice_name, sliced_indices_values):
         """
         write to a certain slice of the tensor
         
-        Warnin: you need to make sure manually that index order is correct
+        name: Tensor to set slice offset
+        
+        slice_name: tensor to get data from
+        
+        sliced_indices_values: values for the indices being sliced
+        
+        If an index is in name but neither in slice_name nor in sliced_index_values, then we broadcast values across this index
+        
         """
         if name not in self.tensorData:
             raise ValueError()
         if values is None:
             return
-        slicedef = [slice(None)]* self.tensorData[name].ndim
-        for index_name in sliced_indices:
-            axis = self.tensorIndexPositionsAll[name][index_name]
-            slicedef[axis] = sliced_indices[index_name]
-        _np.copyto(self.tensorData[name][tuple(slicedef)], values)
+        
+        slicedef, sliced_indextuples = self.makeSliceDef(name, sliced_indices_values)
+
+        #set the specified slice of name to values from slice_name
+        slicedtensordata = self.tensorData[name][tuple(slicedef)]
+        values_aligned = self._alignDimensions(sliced_indextuples, self.tensorIndices[slice_name], self.tensorData[slice_name])        
+        _np.copyto(slicedtensordata, values_aligned)
 
 
+    def makeSliceDef(self, name, sliced_indices):
+        """
+        create numpy slice definition for accessing slices of a tensor
+        
+        Also returns the index tuples of the resulting view
+        """
+        
+        slicedef = [slice(None)]* dims
+        sliced_indextuples = [  list(self.tensorIndices[name][0]), list(self.tensorIndices[name][1])  ]
+        for ul in range(2):
+            for index_name in self.tensorIndexPositions[name][ul]:
+                if index_name in sliced_indices_values:  #this index is being sliced:
+                    axis = self.tensorIndexPositionsAll[name][index_name]
+                    slicedef[axis] = sliced_indices_values[index_name]
+                    sliced_indextuples[ul].remove(index_name)
+                elif not index_name in self.tensorIndices[slice_name][ul]:
+                    #if neither mentioned in sliced_index_values nor in the slice_name, then broadcast values for this index (done by numpy)
+                    pass
+                else:
+                    pass #index present in name and slice_name - setup the permutation order to align both
 
+        return slicedef, sliced_indextuples
+        
 
     def addToTensor(self, name, values, arrayIndices=None):
         """
@@ -617,8 +669,8 @@ class TensorNameSpace(object):
                     
                 elif result_name in self.registeredScalarMultiplications:  
                     operation = "scalar multiplication"
-                    A,scalar = self.registeredScalarMultiplications[result_name]                  
-                    _np.multiply(self.tensorData[A], scalar, out=self.tensorData[result_name])   
+                    A,scalar = self.registeredScalarMultiplications[result_name]
+                    _np.multiply(self.tensorData[A], self.tensorData[scalar], out=self.tensorData[result_name])   #uses implicit broadcasting for scalar
                              
                 elif result_name in self.registeredElementwiseMultiplications:  
                     operation = "scalar multiplication"

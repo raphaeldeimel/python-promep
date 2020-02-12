@@ -2,16 +2,14 @@
 # -*- coding: utf-8 -*-
 """
 @author: Raphael Deimel
-@copyright 2019
+@copyright 2020
 @licence: 2-clause BSD licence
 
 
 """
 import numpy as _np
 
-from . import _namedtensors
-
-class InterpolationGaussian(object):
+class TrajectoryCompositorGaussian(object):
     """
     This class provides a gaussians-based  interpolation scheme 
     
@@ -24,24 +22,8 @@ class InterpolationGaussian(object):
     
     def _configure(self, tensornamespace):
         """
-        returns a function that takes the phase and outputs the interpolation vector psi
-
-        In other words, it creates a basis function kernel with the given metaparameters
-        As proposed the ProMP papers, the basis functions are placed in the interval
-        [ -2*sigma ... 1+2*sigma ]
-
-        If you don't specify sigma, it will be guessed so that basis functions overlap reasonably
-
-        serializedDict: If not None, use the dictionary to recreate the serialized interpolation kernel
-
+        create a trajectory compositor that uses gaussians shifted along phase (used in ProMePs)
         
-        repeatExtremalSupports: 
-            If nonzero, then the first and last basis function are the sums of all basis functions repeated beyond the interval boundaries.
-            Effectively, this makes the ProMP converge towards zero velocity close to the boundaries, instead of converging to zero position
-            While theoretically, we add an infinite number of basis functions, using the first 3 already is a very good approximation
-
-            This is not done in [1]. For having the original ProMP formulation behavior, set repeatedSupports=0
-
         """
         self.indexSizes = dict(tensornamespace.indexSizes)
         self.tensorShape = dict(tensornamespace.tensorShape)

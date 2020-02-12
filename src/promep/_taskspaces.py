@@ -9,8 +9,7 @@ This file contains the main code for computing tensors that map from a task spac
 """
 
 import numpy as _np
-from . import _namedtensors
-
+import namedtensors as  _namedtensors
 
 class JointSpaceToJointSpaceTransform(object):
     """
