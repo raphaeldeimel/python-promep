@@ -75,10 +75,10 @@ for i in range(30):
         'impulse':  impulses, 
     }
     observed_values = _np.zeros((num, 2, len_dofs, len_derivs)) # num,r,d,g    
-    for name in p.readable_names_to_realm_derivative_indices:
+    for name in p.commonnames2rg:
         if name in ('kp', 'kv'):
             continue
-        r_idx, g_idx = p.readable_names_to_realm_derivative_indices[name]
+        r_idx, g_idx = p.commonnames2rg[name]
         observed_values[:,r_idx,d_idx,g_idx] = data[name]
     
     #Xref, Yref remain zero for now

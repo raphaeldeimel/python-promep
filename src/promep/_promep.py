@@ -243,12 +243,8 @@ class ProMeP(object):
         self.msd_expected = _mechanicalstate.MechanicalStateDistribution(self.tns, 'Ymean', 'Ycov')
         
         #get the mapping from human-readable names to indices of m-state distributions
-        self.readable_names_to_realm_derivative_indices = self.msd_expected.commonnames2rg
-        self._gain_names = set()
-        for gain_name in ('kp', 'kv'):
-            if gain_name in self.readable_names_to_realm_derivative_indices:
-                self._gain_names.add('kp')
-        
+        self.commonnames2rg = self.msd_expected.commonnames2rg 
+        self.rg_commonnames = self.msd_expected.rg_commonnames
         
 
         #some initial plot range values so we can plot something at all
@@ -433,7 +429,7 @@ meansMatrix
 
 
     def plot(self, dofs='all',
-                   whatToPlot=['position', 'velocity', 'kp', 'kv', 'impulse', 'torque'],
+                   whatToPlot=['position', 'velocity', 'kp', 'kv', 'int_kv','int_ka', 'impulse', 'torque'],
                    num=101,
                    linewidth=0.5,
                    addExampleTrajectories=10,
@@ -485,6 +481,8 @@ meansMatrix
                 'acceleration': '[rad/s^2]',
                 'kp': '[Nm/rad]',
                 'kv': '[Nm/rad/s]',
+                'int_kv': '[Nm/rad/s]',
+                'int_ka': '[Nm/rad/s^2]',
             }
         else:
             units={
@@ -495,9 +493,11 @@ meansMatrix
                 'acceleration': '[rad/1^2]',
                 'kp': '[Nm/rad]',
                 'kv': '[Nm/rad/1]',
+                'int_kv': '[Nm/rad/1]',
+                'int_ka': '[Nm/rad/1^2]',
             }
         
-        whatToPlot = [name for name in whatToPlot if name in self.readable_names_to_realm_derivative_indices ]
+        whatToPlot = [name for name in whatToPlot if name in self.commonnames2rg ]
 
         if dofs=='all' or dofs == None:
             if self.tns.indexValues['d'] != None:
@@ -513,10 +513,12 @@ meansMatrix
         #gather the data:
         data_mean  = _np.zeros((num,plotrows, self.tns.indexSizes['d']))
         data_sigma = _np.zeros((num,plotrows, self.tns.indexSizes['d']))
-        data_gains = {
-            'kp': _np.zeros((num,self.tns.indexSizes['d'], self.tns.indexSizes['d'])),
-            'kv': _np.zeros((num,self.tns.indexSizes['d'], self.tns.indexSizes['d'])),
-        }
+
+        data_gains={}
+        for names in whatToPlot:
+            if len(self.commonnames2rg[names])==4:
+                data_gains[names] = _np.zeros((num,self.tns.indexSizes['d'], self.tns.indexSizes['d']))
+                
         generalized_phase =_np.zeros((self.tns.indexSizes['g']))            
         for i,phase in enumerate(phases):
             dist =  self.getDistribution(generalized_phase=phase)
@@ -524,11 +526,11 @@ meansMatrix
             means =  dist.getMeansData()
             variances = dist.getVariancesData()
             for row_idx, row_name in enumerate(whatToPlot):
-                if row_name in data_gains:
-                    g_idx, g2_idx = self.readable_names_to_realm_derivative_indices[row_name]
+                if len(self.commonnames2rg[row_name]) == 4: #name of a gain
+                    r_idx, g_idx, r2_idx, g2_idx = self.commonnames2rg[row_name]
                     data_gains[row_name][i,:,:] = gains[g_idx,:,g2_idx,:]
                 else:                
-                    r_idx, g_idx = self.readable_names_to_realm_derivative_indices[row_name]                
+                    r_idx, g_idx = self.commonnames2rg[row_name]                
                     data_mean[i,row_idx,:] = means[r_idx,g_idx,:] 
                     data_sigma[i,row_idx,:] = _np.sqrt(variances[r_idx,g_idx,:] )        
 
@@ -567,9 +569,9 @@ meansMatrix
         for j in range(addExampleTrajectories):
             yvalues = self.sampleTrajectory(phases)
             for row_idx, row_name in enumerate(whatToPlot):
-                if row_name in self._gain_names:
+                if len(self.commonnames2rg[row_name])==4: #is a name for a gain
                     continue
-                r_idx, g_idx = self.readable_names_to_realm_derivative_indices[row_name]
+                r_idx, g_idx = self.commonnames2rg[row_name]
                 for i, dof in enumerate(dofs_to_plot):
                     axesArray[row_idx,col_idx].plot(plot_x, yvalues[:,r_idx,g_idx,dof], alpha=alpha, linewidth=linewidth )
         
@@ -583,11 +585,11 @@ meansMatrix
                 ylimit_common_symm = _np.max(_np.abs(ylimits))
                 ylimit_common = (-ylimit_common_symm, ylimit_common_symm) 
                 for dof, ax in zip(dofs_to_plot, axes_row):
-                    ax.set_title(r"{0} {1}".format(row_name, dof))
+                    ax.set_title('\detokenize{{{} {}}}'.format(row_name, dof))
                     ax.set_ylim(ylimit_common)                
                     ax.get_yaxis().set_visible(False)
                     yticks = [ ylimit_common[0], 0.0, ylimit_common[1] ]                    
-                    yticklabels = ['{0:0.1f}'.format(ylimit_common[0]), '{}'.format(units[row_name]), '{0:0.1f}'.format(ylimit_common[1])]
+                    yticklabels = ['{0:0.1f}'.format(ylimit_common[0]), '\detokenize{{{}}}'.format(units[row_name]), '{0:0.1f}'.format(ylimit_common[1])]
                     yticks, yticklabels = tuple(zip(*sorted(zip(yticks, yticklabels))))
                     ax.set_yticks(yticks)
                     ax.set_yticklabels(yticklabels)
@@ -595,9 +597,9 @@ meansMatrix
         if 'observedTrajectories' in self.__dict__: #plot observations after scaling y axes
             for observation_idx, (times, phases_observation, values, Xrefs, Yrefs, Ts) in enumerate(self.observedTrajectories):        
                 for row_idx, row_name in enumerate(whatToPlot):
-                    if row_name in self._gain_names:
+                    if len(self.commonnames2rg[row_name])==4: #is a name for a gain
                         continue
-                    r_idx, g_idx = self.readable_names_to_realm_derivative_indices[row_name]
+                    r_idx, g_idx = self.commonnames2rg[row_name]
                     if useTime:
                         y = values[:,r_idx,g_idx,:]
                         for col_idx, dof in enumerate(dofs_to_plot):
@@ -829,11 +831,21 @@ meansMatrix
                 samples_total = len(observation.index)
                 data_shape = (samples, self.tns.indexSizes['r'],self.tns.indexSizes['g'],self.tns.indexSizes['d'])
                 values = _np.zeros(data_shape)
-                for name in self.readable_names_to_realm_derivative_indices: 
-                    r_idx, g_idx = self.readable_names_to_realm_derivative_indices[name]
-                    for d_idx in range(8):
-                        values[:, r_idx, g_idx, d_idx] = observation[ ('observed', name, d_idx) ]
-            
+                for r_idx in range(self.tns.indexSizes['r']):
+                    for g_idx in range(self.tns.indexSizes['g']):
+                        name = self.rg_commonnames[r_idx, g_idx]
+                        for d_idx in range(8):                        
+                            try:
+                                values[:, r_idx, g_idx, d_idx] = observation[ ('observed', name, d_idx) ]
+                            except KeyError:
+                                print("Warning:observations do not contain values for {}".format(name))
+                                values[:, r_idx, g_idx, d_idx] = 0.0
+
+#                for name in self.commonnames2rg: 
+#                    r_idx, g_idx = self.commonnames2rg[name]
+#                    for d_idx in range(8):
+#                        values[:, r_idx, g_idx, d_idx] = observation[ ('observed', name, d_idx) ]
+#            
                 times = observation['t']
                 phases = observation[['phi','dphidt','ddphidt2']]
                 #setup for joint-space learning:

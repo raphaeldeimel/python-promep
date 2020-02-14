@@ -27,8 +27,8 @@ def _makeMetadataLookuptable(r_max=2, g_max=4):
             metadata['indexNames'] = ('r','d','g')
             metadata['indexNames_transposed'] = ('r_','d_','g_')
 
-            motion_names = ('position', 'velocity', 'acceleration', 'jerk')
-            effort_names = ('int_int_torque', 'impulse', 'torque', 'torque_rate')
+            motion_names = ('position', 'velocity', 'acceleration', 'jerk', 'snap', 'crackle', 'pop', 'lock', 'drop')
+            effort_names = ('int_int_torque', 'impulse', 'torque', 'torque_rate', 'deriv_deriv_torque')
             
             # For motion, position is always included, irrespective of g
             # But for effort, we want to make sure torque is always included.
@@ -48,11 +48,40 @@ def _makeMetadataLookuptable(r_max=2, g_max=4):
                 for r_idx in  range(r):
                     plain_name = metadata['rg_commonnames'][r_idx][g_idx]
                     names2rg[plain_name] = (r_idx,g_idx)
+
+            #a somewhat elaborate list of gains names for all combinations up to fourth derivative:
+            gain_names =  [
+
+                ('torque_rate',    'position', 'delta_kabsement'), 
+
+                ('torque',         'position',                 'kp'), 
+                ('torque_rate',    'velocity',           'delta_kp'),
+
+                ('impulse',        'position',            'int_kv'), 
+                ('torque',         'velocity',                'kv'),
+                ('torque_rate',    'acceleration',      'delta_kv'),
+
+                ('int_int_torque', 'position',        'int_int_ka'), 
+                ('impulse',        'velocity',            'int_ka'),
+                ('torque',         'acceleration',            'ka'),
+                ('torque_rate',    'jerk',              'delta_ka'),
+
+                ('int_int_torque', 'velocity',     'int_int_kjerk'), 
+                ('int_torque',     'acceleration',     'int_kjerk'), 
+                ('torque',         'jerk',                 'kjerk'), 
                 
-            if 'torque' in names2rg and 'position' in names2rg:
-                names2rg['kp'] = (names2rg['torque'][1], names2rg['position'][1])  #gains get the derivative indices of effort&motion
-            if 'torque' in names2rg and 'velocity' in names2rg:
-                names2rg['kv'] = (names2rg['torque'][1], names2rg['velocity'][1])
+                ('int_int_torque', 'acceleration', 'int_int_ksnap'), 
+                ('impulse',        'jerk',             'int_ksnap'), 
+
+                ('int_int_torque', 'jerk',   'int_int_int_kcrackle'), 
+                
+            
+            ]
+            #add gains to dictionary, if they exist in the distribution:                
+            for effort_name, motion_name, gains_name in gain_names:        
+                if effort_name in names2rg and motion_name in names2rg:
+                    names2rg[gains_name] = names2rg[effort_name] + names2rg[motion_name]
+
 
             metadata['commonnames2rg'] = names2rg
             namelookup_table[r][g] = metadata

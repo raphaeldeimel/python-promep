@@ -80,10 +80,10 @@ for i in range(30):
         'torque':   torques, 
         'impulse':  impulses, 
     }
-    for name in p.readable_names_to_realm_derivative_indices:
+    for name in p.commonnames2rg:
         if name in ('kp', 'kv'):
             continue
-        r_idx, g_idx = p.readable_names_to_realm_derivative_indices[name]
+        r_idx, g_idx = p.commonnames2rg[name]
         observed_values[:,r_idx,g_idx,d_idx] = data[name]
     
     #Xref, Yref remain zero for now
