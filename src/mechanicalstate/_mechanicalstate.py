@@ -14,10 +14,65 @@ import collections as _collections
 import matplotlib.pylab as _plt
 import matplotlib as _mpl
 
+import namedtensors as _nt
+
+
+#Precompute this to avoid large overhead every time a MechanicalStateDistribution object is instantiated (which very probably all have the same r and g size)
+def _makeMetadataLookuptable(r_max=2, g_max=4):
+    namelookup_table = [[None]*(g_max+1)]*(r_max+1)
+    for r in range(1,r_max+1):
+        for g in range(1,g_max+1):
+            metadata = {}
+            
+            metadata['indexNames'] = ('r','d','g')
+            metadata['indexNames_transposed'] = ('r_','d_','g_')
+
+            motion_names = ('position', 'velocity', 'acceleration', 'jerk')
+            effort_names = ('int_int_torque', 'impulse', 'torque', 'torque_rate')
+            
+            # For motion, position is always included, irrespective of g
+            # But for effort, we want to make sure torque is always included.
+            # So if g <=2, we drop lower derivatives instead of higher ones:
+            if g <=2:   
+                shift_effort_by = 3-g #remember by how much gtilde for effort is shifted
+            else:
+                shift_effort_by = 0
+            names_all = [ motion_names[:g], effort_names[shift_effort_by:shift_effort_by+g]][:r]
+            
+            metadata['rg_commonnames'] = names_all
+            metadata['realm_names'] = ['motion0', "effort{}".format(shift_effort_by)][:r+1]
+                       
+            #set up translation dict from human-readable names to indices used within the promep data structures:
+            names2rg={}
+            for g_idx in range(g):
+                for r_idx in  range(r):
+                    plain_name = metadata['rg_commonnames'][r_idx][g_idx]
+                    names2rg[plain_name] = (r_idx,g_idx)
+                
+            if 'torque' in names2rg and 'position' in names2rg:
+                names2rg['kp'] = (names2rg['torque'][1], names2rg['position'][1])  #gains get the derivative indices of effort&motion
+            if 'torque' in names2rg and 'velocity' in names2rg:
+                names2rg['kv'] = (names2rg['torque'][1], names2rg['velocity'][1])
+
+            metadata['commonnames2rg'] = names2rg
+            namelookup_table[r][g] = metadata
+    return namelookup_table
+
+_static_namelookup_table = _makeMetadataLookuptable()
+
+
+
 class MechanicalStateDistribution(object):
 
-    def __init__(self, means, covariances, precisions=None):
+    def __init__(self, tensornamespace, meansName, covariancesName, precisionsName=None):
         """
+
+        tensornamespace: namespace the data are defined/managed in 
+        
+        meansName, covariancesName: names of the tensor in the tensor namespace
+        
+        precisionsName: optional tensor that holds inverses
+
         means: the epectation of the distribution
                         shape: (r,g,d)  
         covariances: the covariance tensor of the distribution 
@@ -25,49 +80,40 @@ class MechanicalStateDistribution(object):
         precisions: inverse of the covariance tensor. Set this if available so multiple inversions canbe avoided
                         
         Usually: r=2, g=2, d=8
-        """
-        self.means = _np.array(means)
-        self.covariances = _np.array(covariances)
-        self.precisions = _np.array(precisions)
-        self.shape = means.shape
-        self.indexNames = ['r','d','g']
-        self.index_sizes = _collections.OrderedDict({  #OrderedDict for python2 backward compatibility
-                'r': self.covariances.shape[0],
-                'd': self.covariances.shape[1],
-                'g': self.covariances.shape[2],
-                'r_': self.covariances.shape[3],
-                'd_': self.covariances.shape[4],
-                'g_': self.covariances.shape[5],
-        })
-        self.indexNames_transposed = ['r_','d_','g_']
+        """    
+        self.tns = tensornamespace
+        self.meansName = meansName
+        self.covariancesName = covariancesName
+        self.precisionsName = precisionsName
+        metadata = _static_namelookup_table[self.tns.indexSizes['r']][self.tns.indexSizes['g']]
+        self.commonnames2rg = metadata['commonnames2rg']
+        self.rg_commonnames = metadata['rg_commonnames']        
+        self.realm_names = metadata['realm_names']
+        self.indexNames = metadata['indexNames']
+        self.indexNames_transposed = metadata['indexNames_transposed']      
         
-        #create a view on the variances within the covariance tensor:
-        self.variances_view = _np.einsum('ijkijk->ijk', self.covariances)
-        
-        self.covariances_flatview = self.covariances.view()
-        self.covariances_flatview.shape = (_np.multiply(self.shape[:3]), _np.multiply(self.shape[3:]))
-        
-        #human-readable names for (realm, derivative) index combinations:
-        motion_names = ('position', 'velocity', 'acceleration', 'jerk')
-        effort_names = ('int_int_torque', 'impulse', 'torque', 'torque_rate')
-        
-        if self.index_sizes['g'] < 3:   #if we have less than 3 derivatives, make sure that torque always stays represented:
-            shift_effort_by = 3-self.index_sizes['g'] #remember by how much gtilde for effort is shifted
-        
-        self.motion_available_names = motion_names[:self.index_sizes['g']]
-        self.effort_available_names = effort_names[shift_effort_by:shift_effort_by+self.index_sizes['g']]
+        self._advancedmethodsUsable=False
 
-        #set up translation dict from human-readable names to indices used within the promep data structures:
-        d={}
-        for g_idx in range(self.index_sizes['g']):
-            d[motion_names[g_idx]] = (0,g_idx)
-            d[effort_names[g_idx]] = (1,g_idx)
-        if 'torque' in d and 'position' in d:
-            d['kp'] = (d['torque'][1], d['position'][1])  #gains get the derivative indices of effort&motion
-        if 'torque' in d and 'velocity' in d:
-            d['kv'] = (d['torque'][1], d['velocity'][1])
-        self.readable_names_to_realm_derivative_indices = d
-        self.name2rg = self.readable_names_to_realm_derivative_indices #shorthand
+    def _makeAdvancedMethodsUsable(self):
+        if not self._advancedmethodsUsable:
+            self._tns_local = _nt.TensorNameSpace(self.tns)
+            self._tns_local.registerIndex('g2', self._tns_local.indexSizes['g'])
+            self._tns_local.registerIndex('d2', self._tns_local.indexSizes['d'])
+            self._tns_local.registerTensor('covs', self.tns.tensorIndices[self.covariancesName],  external_array=self.tns.tensorData[self.covariancesName])
+            self._tns_local.renameIndices('covs', {'g_':'g2', 'd_':'d2'}, inPlace=True)
+            self._tns_local.registerSlice('covs', {'r':'motion', 'r_':'motion'},  result_name='motionmotion')
+            self._tns_local.registerSlice('covs', {'r':'effort', 'r_':'motion'},  result_name='effortmotion')
+            self._tns_local.registerInverse('motionmotion', side='right', regularization=1e-5)
+            self._tns_local.registerContraction('effortmotion', '(motionmotion)^#', result_name='gains_neg', align_result_to=(('g', 'd'),('g_','d_')) )        
+            self._tns_local.registerScalarMultiplication('gains_neg', -1.0, result_name = 'gains')
+            self._gainsequations = self._tns_local.update_order[:]
+
+            self._tns_local.registerInverse('covs', result_name='precision')
+            self._precisionequations = ['precision']
+
+            self._advancedmethodsUsable = True
+        
+                
         
     
     def __repr__(self):
@@ -78,44 +124,49 @@ class MechanicalStateDistribution(object):
             text += "\nDerivative {}:\n       Means:\n{}\n       Variances:\n{}\n".format(g_idx, self.means[:,:,g_idx], self.variances_view[:,:,g_idx])
         return text
         
-    def extractPDGains(self, realm_motion=0, realm_effort=1):
+    def extractTorqueControlGains(self):
         """
         compute and return PD controller gains implied by the covariance matrix
+        
+        Indices are in g,d,g,d order
         """
-        dofs = self.index_sizes['d']
-        subcov_shape = (dofs * self.index_sizes['g'], dofs * self.index_sizes['g'])
-        gains = _np.zeros((dofs,dofs,self.index_sizes['g']))
-
-        sigma_qt = self.covariances[realm_motion, :, :,realm_effort, :,:].reshape(subcov_shape)
-        sigma_qq = self.covariances[realm_motion, :, :,realm_motion, :,:].reshape(subcov_shape)
-
-        sigma_qq_inv = _np.linalg.pinv(sigma_qq)
-        gains = -1 * _np.dot(sigma_qt,sigma_qq_inv) 
-        gains.shape = (dofs, self.index_sizes['g'], dofs, self.index_sizes['g'])
-
-        return gains
+        #not very efficient to construct this every time, but it is convenient:
+        self._makeAdvancedMethodsUsable()
+        self._tns_local.update(*self._gainsequations)
+        return self._tns_local.tensorData['gains']
 
 
     def getPrecisions(self):
         """
         Interface to get a precision tensor even if it was not yet computed
-        """
-        if self.precisions == None:
-            shape_flat_row = _np.multiply(self.covariances.shape[0:3])
-            covs_flat = self.covariances.reshape(shape_flat_row, -1)
-            self.precisions = _np.linalg.pinv(covs_flat).reshape(self.covariances.shape)
+        """                
+        if self.precisionsName != None:
+            return self.tns.tensorData[self.precisionsName], self.tns.tensorIndices[self.precisionsName]
+        else:
+            self._makeAdvancedMethodsUsable()        
+            self._tns_local.update(*self._precisionequations)
+            return self._tns_local.tensorData['precision'], self._tns_local.tensorIndices['precision']
         return self.precisions
         
 
-        
-    def getParameterSubSetAsList(self, names):
+    def getMeansData(self):
         """
-        convenience function to make it easier to send data via ros msgs
+        return the means in a canonical form ( indicces in r,g,d order)
         """
-        slices = [ slice(self.self.name2rg[name]+(None))  for name in names ]        
-        meansList = mixed_msd.means[slices].reshape(-1).toList()
-        covariancesList = self.covariances[slices][slices].reshape(-1).toList()
-        return meansList, covariancesList
+        return self.tns._alignDimensions( (('r','g','d'), ()),self.tns.tensorIndices[self.meansName],   self.tns.tensorData[self.meansName]) 
+
+    def getCovariancesData(self):
+        """
+        return the covariances in a canonical form ( indicces in r,g,d order)
+        """
+        return self.tns._alignDimensions( (('r','g','d'), ('r_','g_','d_')),self.tns.tensorIndices[self.covariancesName],   self.tns.tensorData[self.covariancesName]) 
+
+    def getVariancesData(self):
+        """
+        return the covariances in a canonical form ( indicces in r,g,d order)
+        """
+        return self.tns._alignDimensions( (('r','g','d'), ()), (self.tns.tensorIndices[self.covariancesName][0],()),   self.tns.tensorDataDiagonal[self.covariancesName]) 
+
 
     def plotCorrelations(self):
         """
@@ -126,19 +177,18 @@ class MechanicalStateDistribution(object):
             '': verbatim covariance matrix
             ''rg': variances between realms and between derivatives are normalized (default)
         """
-        cov = self.covariances
-        sigmas = _np.sqrt(self.variances_view)
+        cov = self.tns.tensorData[self.covariancesName]
+        sigmas = _np.sqrt(self.tns.tensorDataDiagonal[self.covariancesName])
         title="Correlations"
 
         sigmamax_inv = 1.0 / _np.clip(sigmas, 1e-6, _np.inf)        
-        cov_scaled = sigmamax_inv[:,:,:, None,None,None] * cov * sigmamax_inv[None,None,None, :,:,:] 
+        cov_scaled = sigmamax_inv[:,:,:,None,None,None] * cov * sigmamax_inv[None,None,None,:,:,:] 
         vmax=_np.max(cov_scaled)
 
-        len_r = self.index_sizes['r']
-        len_d = self.index_sizes['d']
-        len_g = self.index_sizes['g']
+        len_r = self.tns.indexSizes['r']
+        len_d = self.tns.indexSizes['d']
+        len_g = self.tns.indexSizes['g']
         len_all = len_r * len_g * len_d
-
 
         cov_reordered =_np.transpose(cov_scaled, axes=(0,1,2, 0+3,1+3,2+3)) #to srgd
         image =_np.reshape(cov_reordered, (len_all,len_all))
@@ -210,17 +260,6 @@ class MechanicalStateDistribution(object):
         #_plt.tight_layout()
 
 
-
-
-def makeMechanicalStateDistributionFromIndexSizes(index_sizes):
-    """
-    Alternative construction
-    """
-    initialMeans = _np.zeros((index_sizes['r'], index_sizes['g'], index_sizes['d'] ))
-    initialCovs = _np.zeros((index_sizes['r'], index_sizes['g'], index_sizes['d'], index_sizes['r'], index_sizes['g'], index_sizes['d'] ))
-    msd = MechanicalStateDistribution(initialMeans, initialCovs)
-    msd.variances_view[:] = 10.0
-    return msd
 
 
 #set a sensible default color map for correlations

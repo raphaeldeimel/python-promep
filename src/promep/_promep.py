@@ -29,6 +29,8 @@ import namedtensors as _namedtensors
 
 from . import _trajectorycompositors, _kumaraswamy
 
+import pandas as _pandas
+
 from  scipy.special import betainc as _betainc
 from sklearn import covariance as _sklearncovariance
 
@@ -171,15 +173,6 @@ class ProMeP(object):
             else:
                   self.tns.registerIndex(name, self.index_sizes[name], values = list(range(self.index_sizes[name])))
 
-        #get a mapping from human-readable names to indices of m-state distributions
-        msd_reference = MechanicalStateDistribution(index_sizes)
-        self.readable_names_to_realm_derivative_indices = msd_reference.readable_names_to_realm_derivative_indices
-
-        self._gain_names = set()
-        for gain_name in ('kp', 'kv'):
-            if gain_name in self.readable_names_to_realm_derivative_indices:
-                self._gain_names.add('kp')
-        
         self.trajectory_composition_method = trajectory_composition_method
 
         self.task_space_name = task_space_name
@@ -194,17 +187,17 @@ class ProMeP(object):
 
         #set which trajectory composition method generates PHI?
         if self.trajectory_composition_method=='gaussians':
-            PHI_computer=_trajectorycompositors.TrajectoryCompositorGaussian(),   #Currently, we have only one method
-            self.tns.registerExternalFunction(PHI_computer.update, ['phase'], ['PHI'],  [(('gphi',),('stilde',))])
-        else:
+            self.trajectorycompositor=_trajectorycompositors.TrajectoryCompositorGaussian(tensornamespace=self.tns) 
+            self.tns.registerExternalFunction(self.trajectorycompositor.update, ['phase'], ['PHI'],  [(('gphi',),('stilde',))])
+        else: #Currently, we have only one method
             raise NotImplementedError()        
 
         #set function to compute chain derivatives (P tensor):
         self.tns.registerExternalFunction(_updateP, ['phase'], ['P'],  [(('g',),('gphi','gtilde'))] )
         
         #set up tensors involved in taskspace mapping:
-        self.tns.registerTensor('Yref', (('r','d','g',),()) )     
-        self.tns.registerTensor('Xref',  (('rtilde', 'dtilde', 'g'),()) )    
+        self.tns.registerTensor('Yref', (('r','g','d'),()) )     
+        self.tns.registerTensor('Xref',  (('rtilde', 'g', 'dtilde'),()) )    
         self.tns.registerTensor('T',   (('r','d'),('rtilde', 'dtilde')) ) 
         if self.task_space_name=='jointspace':
             self.tns.setTensorToIdentity('T')
@@ -223,11 +216,11 @@ class ProMeP(object):
         #project the mean of weights to mean of trajectory:
         self.tns.registerContraction('PSI', 'Wmean')
         
-        self.tns.registerAddition('PSI:Wmean', 'O', result_name='Ymean')
+        self.tns.registerAddition('PSI:Wmean', 'O', result_name='Ymean', align_result_to=(('r','g','d'),()))
         
         #project the covariances of weights to covariances of trajectory:
         self.tns.registerContraction('PSI', 'Wcov')
-        self.tns.registerContraction('PSI:Wcov', '(PSI)^T', result_name='Ycov')
+        self.tns.registerContraction('PSI:Wcov', '(PSI)^T', result_name='Ycov', align_result_to=(('r','g','d'),('r_','g_','d_',)) )
 
         ######
        
@@ -245,6 +238,18 @@ class ProMeP(object):
         
         #temporary/scratch tensors:
         self.tns.registerTensor('Wsample', (('r','gtilde','stilde','dtilde'),()) )
+        
+        #setup a MechanicalStateDistribution() object to return results:
+        self.msd_expected = _mechanicalstate.MechanicalStateDistribution(self.tns, 'Ymean', 'Ycov')
+        
+        #get the mapping from human-readable names to indices of m-state distributions
+        self.readable_names_to_realm_derivative_indices = self.msd_expected.commonnames2rg
+        self._gain_names = set()
+        for gain_name in ('kp', 'kv'):
+            if gain_name in self.readable_names_to_realm_derivative_indices:
+                self._gain_names.add('kp')
+        
+        
 
         #some initial plot range values so we can plot something at all
         self.plot_range_guesses = { 'torque': [-20,20], 'position': [-1.5,1.5], 'velocity': [-2.0,2.0], 'gains': [-10,100.0],}
@@ -379,7 +384,7 @@ meansMatrix
             
             taskspaces: dictionary of task space mappings. May be used 
 
-            returns a MechanicalStateDistribution object with the expected distribution     
+            returns a MechanicalStateDistribution object with the expected distribution  
 
         """
         self.tns.setTensor('phase', generalized_phase)
@@ -390,8 +395,7 @@ meansMatrix
             self.tns.setTensor('T', taskspacemapping_tensors['T']) 
         #Now compute the actual ProMeP equation:
         self.tns.update()
-
-        return _mechanicalstate.MechanicalStateDistribution(self.tns.tensorData['Ymean'], self.tns.tensorData['Ycov'])
+        return self.msd_expected  #sends back reference to Ymean and Ycov
 
 
 
@@ -420,11 +424,11 @@ meansMatrix
         #compute the trajectory:    
         Wmean_saved = _np.array(self.tns.tensorData['Wmean'], copy=True)
         self.tns.setTensor('Wmean', W)
-        points_list = []   
+        points = _np.zeros( (num, self.tns.indexSizes['r'], self.tns.indexSizes['g'], self.tns.indexSizes['d']))
         for i in range(num):
-            points_list.append(self.getDistribution(generalized_phase=generalized_phases[i]).means)
+            _np.copyto(points[i,...], self.getDistribution(generalized_phase=generalized_phases[i]).getMeansData())
         self.tns.setTensor('Wmean', Wmean_saved) #restore abused Wmean
-        return _np.array(points_list)
+        return points
 
 
 
@@ -516,16 +520,17 @@ meansMatrix
         generalized_phase =_np.zeros((self.tns.indexSizes['g']))            
         for i,phase in enumerate(phases):
             dist =  self.getDistribution(generalized_phase=phase)
+            gains  = dist.extractTorqueControlGains()
+            means =  dist.getMeansData()
+            variances = dist.getVariancesData()
             for row_idx, row_name in enumerate(whatToPlot):
                 if row_name in data_gains:
-                    gains  = dist.extractPDGains()
                     g_idx, g2_idx = self.readable_names_to_realm_derivative_indices[row_name]
-                    data_gains[row_name][i,:,:] = gains[:,g_idx,:,g2_idx]
+                    data_gains[row_name][i,:,:] = gains[g_idx,:,g2_idx,:]
                 else:                
                     r_idx, g_idx = self.readable_names_to_realm_derivative_indices[row_name]                
-                    data_mean[i,row_idx,:] = dist.means[r_idx,:,g_idx] 
-                    data_sigma[i,row_idx,:] = _np.sqrt( dist.variancesView[r_idx,:,g_idx] )
-        
+                    data_mean[i,row_idx,:] = means[r_idx,g_idx,:] 
+                    data_sigma[i,row_idx,:] = _np.sqrt(variances[r_idx,g_idx,:] )        
 
         fig, axesArray = _plt.subplots(plotrows,len(dofs_to_plot), squeeze=False, figsize=(max(len(dofs_to_plot), plotrows)*subplotfigsize, plotrows*subplotfigsize), sharex='all', sharey='row')
         for ax in axesArray.flat:
@@ -566,7 +571,7 @@ meansMatrix
                     continue
                 r_idx, g_idx = self.readable_names_to_realm_derivative_indices[row_name]
                 for i, dof in enumerate(dofs_to_plot):
-                    axesArray[row_idx,col_idx].plot(plot_x, yvalues[:,r_idx,dof,g_idx], alpha=alpha, linewidth=linewidth )
+                    axesArray[row_idx,col_idx].plot(plot_x, yvalues[:,r_idx,g_idx,dof], alpha=alpha, linewidth=linewidth )
         
 
 
@@ -594,16 +599,16 @@ meansMatrix
                         continue
                     r_idx, g_idx = self.readable_names_to_realm_derivative_indices[row_name]
                     if useTime:
-                        y = values[:,r_idx,:,g_idx]
+                        y = values[:,r_idx,g_idx,:]
                         for col_idx, dof in enumerate(dofs_to_plot):
                             axesArray[ row_idx, col_idx].plot(times, y[:,dof], alpha=alpha, linewidth=linewidth, color=observedColor )
                     else:
                         if phases_observation.shape[1] > g_idx:   #only plot in phase if we have phase derivatives to scale observations with 
                             if g_idx > 0:
                                 scaler = 1.0 / phases_observation[:,1]
-                                y = values[:,r_idx,:,g_idx] * (scaler[:,None]**g_idx)
+                                y = values[:,r_idx,g_idx,:] * (scaler[:,None]**g_idx)
                             else:
-                                y = values[:,r_idx,:,g_idx]
+                                y = values[:,r_idx,g_idx,:]
                             for col_idx, dof in enumerate(dofs_to_plot):
                                 axesArray[ row_idx, col_idx].plot(phases_observation[:,0], y[:,dof], alpha=alpha, linewidth=linewidth, color=observedColor )
 
@@ -779,6 +784,9 @@ meansMatrix
             observations,
             max_iterations=10, 
             minimal_relative_improvement=1e-9,
+            target_space_observations_indices = (('r','g','d'),()),
+            task_space_observations_indices = (('rtilde', 'g', 'dtilde'),()),
+            task_map_observations_indices= (('r', 'd'),('rtilde', 'dtilde')),
             ):
         """
         
@@ -787,20 +795,22 @@ meansMatrix
         Observations are tuples of  (times, phases, values, Xrefs, Yrefs, Ts) tensors (data arrays)
         
         phases: Generalized phases of shape (n, 'd')
-        means: observed values at the given phases, of shape (n, 'd', 'g')
-        Xref, Yref: Task space linearization references, of shape (n, 'rtilde', 'dtilde', 'gtilde', 'stilde' ) and (n, 'r', 'd', 'g') respectively
+        means: observed values at the given phases, of shape (n,) + observations_indices
+        Xref, Yref: Task space linearization references, of shape (n, 'rtilde', 'gtilde', 'stilde','dtilde' ) and (n, 'r', 'd', 'g') respectively
         #
        
         Implements the expectation-maximization procedure of the paper "Using probabilistic movement primitives in robotics" by Paraschos et al.
         """
         pool = _multiprocessing.Pool()        
         
+        
+        
         tns_perSample = self.tns.copy()
         #truncate equations that we do not need to compute:
         tns_perSample.update_order = tns_perSample.update_order[:tns_perSample.update_order.index('PSI')+1]
         #subtract the offset caused by the task map linearization when computing the per-sample data, so during learning we ignore Xref and Yref
-        tns_perSample.registerTensor('Yobserved', (('r','d','g'),()) )
-        tns_perSample.registerSubtraction('Yobserved', 'O', 'Yhatslice')
+        tns_perSample.registerTensor('Yobserved', (('r', 'g', 'd'),()) )
+        tns_perSample.registerSubtraction('Yobserved', 'O', result_name='Yhatslice')
         
         self.tns_perSample = tns_perSample
         #we only need to compute until we have PSI:
@@ -812,25 +822,27 @@ meansMatrix
         T_jointspace.shape = (self.tns.indexSizes['r'],self.tns.indexSizes['d'],self.tns.indexSizes['rtilde'],self.tns.indexSizes['dtilde']) #r,d,rtilde, dtilde
         
         for observation_idx, observation in enumerate(observations):            
-            import pandas as _pandas
-            if observation.isinstance(x, _pandas.DataFrame):
+            if isinstance(observation, tuple):   #old interface: tuple of arrays
+                times, phases, values, Xrefs, Yrefs, Ts = observation
+                samples_total = phases.shape[0]
+            elif isinstance(observation, _pandas.DataFrame): #preferred one: pandas dataframe
                 samples_total = len(observation.index)
-                data_shape = (samples, self.tns.indexSizes['r'],self.tns.indexSizes['d'],self.tns.indexSizes['g'])
+                data_shape = (samples, self.tns.indexSizes['r'],self.tns.indexSizes['g'],self.tns.indexSizes['d'])
                 values = _np.zeros(data_shape)
                 for name in self.readable_names_to_realm_derivative_indices: 
                     r_idx, g_idx = self.readable_names_to_realm_derivative_indices[name]
                     for d_idx in range(8):
-                        values[:, r_idx, d_idx, g_idx] = observation[ ('observed', name, d_idx) ]
+                        values[:, r_idx, g_idx, d_idx] = observation[ ('observed', name, d_idx) ]
+            
                 times = observation['t']
                 phases = observation[['phi','dphidt','ddphidt2']]
                 #setup for joint-space learning:
-                Yrefs = _np.zeros(data_shape)   # or observation[ ('observed', 'position') ]
-                Xrefs = _np.zeros(data_shape)   # or observation[ ('observed', 'position') ]
+                Yrefs = _np.zeros( (samples, self.tns.indexSizes['r'],self.tns.indexSizes['g'],self.tns.indexSizes['d']) ) 
+                Xrefs = _np.zeros( (samples, self.tns.indexSizes['rtilde'],self.tns.indexSizes['g'],self.tns.indexSizes['dtilde']) ) 
                 Ts = _np.tile(T_jointspace, (samples,1,1,1,1))
-            else: #old interface: try to interprete it as tuple of arrays:
-                times, phases, values, Xrefs, Yrefs, Ts = observation
-                samples_total = phases.shape[0]
-
+            else:
+                raise ValueError("Unsupported data structure for observations argument")
+            
             #compute how we partition the observation samples into subsets to reduce computational effort and increase the number of w samples available for covariance estimation:
             samplesetsize  = self.tns.indexSizes['stilde'] * 3  #no need to add much more samples than we have interpolation parameters over time
             partitions = samples_total // samplesetsize
@@ -847,8 +859,8 @@ meansMatrix
                 
                 tns_perObservation.registerIndex('samples', samplesetsize)        
 
-                tns_perObservation.registerTensor('Yhat', (('samples','r', 'd', 'g'),()))
-                tns_perObservation.registerTensor('PSIhat', (('samples','r', 'd', 'g'), ('rtilde', 'dtilde','gtilde', 'stilde')))
+                tns_perObservation.registerTensor('Yhat', (('samples','r', 'g', 'd'),()))
+                tns_perObservation.registerTensor('PSIhat', (('samples','r', 'g','d'), ('rtilde', 'dtilde','gtilde', 'stilde')))
                 tns_perObservation.registerTensor('Wmean', self.tns.tensorIndices['Wmean'])                     
                 tns_perObservation.registerTensor('Wcov', self.tns.tensorIndices['Wcov'])
                 
@@ -871,19 +883,24 @@ meansMatrix
                 
                 tns_perObservation.lazyupdate = tns_perObservation.update_order[tns_perObservation.update_order.index('Ymean'):]                
 
+
                 #preprocess samples into pairs of Yhat and PSIhat for each observation:
                 for i, sample in enumerate(sampleindices[partition,:]):
                     #compute PSIi:
-                    tns_perSample.setTensor('Xref',       Xrefs[sample,...], (('rtilde', 'dtilde', 'g'),()) ) 
-                    tns_perSample.setTensor('Yref',       Yrefs[sample,...], (('r', 'd', 'g'),()) )                
-                    tns_perSample.setTensor('T',             Ts[sample,...], (('r', 'd'),('rtilde', 'dtilde')) )
+                    tns_perSample.setTensor('Xref',       Xrefs[sample,...], task_space_observations_indices ) 
+                    tns_perSample.setTensor('Yref',       Yrefs[sample,...], target_space_observations_indices )                
+                    tns_perSample.setTensor('T',             Ts[sample,...], task_map_observations_indices )
                     tns_perSample.setTensor('phase',     phases[sample,...], (('g'),()) )
-                    tns_perSample.setTensor('Yobserved', values[sample,...], (('r', 'd', 'g'),()) )          
+                    tns_perSample.setTensor('Yobserved', values[sample,...], target_space_observations_indices )          
                     tns_perSample.update()
-                    slice_indices = (tns_perObservation.tensorIndices['PSIhat'][0][1:],tns_perObservation.tensorIndices['PSIhat'][1])
-                    psi_aligned = tns_perObservation._alignDimensions(slice_indices, tns_perSample.tensorIndices['PSI'], tns_perSample.tensorData['PSI'])
-                    _np.copyto(tns_perObservation.tensorData['PSIhat'][i,...], psi_aligned) #aggregate data into PSIhat
-                    _np.copyto(tns_perObservation.tensorData['Yhat'][i,...], tns_perSample.tensorData['Yhatslice']) #aggregate values into Yhat
+                    tns_perObservation.setTensorSlice('PSIhat', {'samples': i}, 'PSI',        slice_namespace=tns_perSample)
+                    tns_perObservation.setTensorSlice('Yhat',   {'samples': i}, 'Yhatslice',  slice_namespace=tns_perSample)
+                    
+                    
+                    #slice_indices = (tns_perObservation.tensorIndices['PSIhat'][0][1:],tns_perObservation.tensorIndices['PSIhat'][1])
+                    #psi_aligned = tns_perObservation._alignDimensions(slice_indices, tns_perSample.tensorIndices['PSI'], tns_perSample.tensorData['PSI'])
+                    #_np.copyto(tns_perObservation.tensorData['PSIhat'][i,...], psi_aligned) #aggregate data into PSIhat
+                    #_np.copyto(tns_perObservation.tensorData['Yhat'][i,...], tns_perSample.tensorData['Yhatslice']) #aggregate values into Yhat
 
 
         #now do expectation-maximization:

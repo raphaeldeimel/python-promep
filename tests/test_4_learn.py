@@ -53,15 +53,18 @@ for i in range(30):
 
     #set some notrivial phase profile:
     observed_phases[:,0] = _kumaraswamy.cdf(1.45,1.68,_np.linspace(0, 1.0, num))    
+#    observed_phases[:,0] = _kumaraswamy.cdf(1.,1.,_np.linspace(0, 1.0, num))    
     #observed_phases[:,0] = _np.linspace(0, 1.0, num)   
     if len_derivs > 1:
         observed_phases[:,1] = _np.gradient(observed_phases[:,0]) / _np.gradient(observed_times)
     
-    observed_phases = observed_phases + 0.01 * _np.random.normal(size=(num, 1))
+    observed_phases = observed_phases #+ 0.01 * _np.random.normal(size=(num, 1))
     velocities = 3.0 * _np.cos(2*observed_times)
-    positions = _scipy.integrate.cumtrapz(velocities, x=observed_times, initial=0.0)
+    position_offset = _np.random.normal()
+    positions_delta = _scipy.integrate.cumtrapz(velocities, x=observed_times, initial=0.0)
+    positions  = position_offset + positions_delta
 
-    torques   = -0 * positions -15 * velocities
+    torques   = -30 * positions -0 * velocities
     impulses  = _scipy.integrate.cumtrapz(torques, x=observed_times, initial=0.0)
 
     #fill into values array:
@@ -91,7 +94,6 @@ p.saveToFile(path='./temp')
 
 p.plot()
 p.plot(useTime=False)
-
 p.plotCovarianceTensor()
 p.plotExpectedPhase()
 

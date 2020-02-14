@@ -49,9 +49,9 @@ for i in range(30):
     observed_times = _np.linspace(0, duration, num)
     observed_dts =  ( observed_times[1:] - observed_times[:-1] )
     observed_phases = _np.zeros((num, len_derivs))              # num, g
-    observed_values = _np.zeros((num, 2, len_derivs, len_dofs)) # num,r,g,d
-    observed_Yrefs = _np.zeros((num, 2, len_derivs, len_dofs))   # num,r,g,d
-    observed_Xrefs = _np.zeros((num, 2, len_derivs, len_dofs))   # num,rtilde,gtilde,dtilde
+    observed_values = _np.zeros((num, 2, len_derivs,  len_dofs)) # num,r,d,g
+    observed_Yrefs = _np.zeros((num, 2, len_derivs, len_dofs))   # num,r,d,g
+    observed_Xrefs = _np.zeros((num, 2,len_derivs, len_dofs))   # num,rtilde,dtilde,g
     I = _np.eye((2*len_dofs)).reshape((2, len_dofs, 2,len_dofs)) #r,d,rtilde, dtilde
     observed_Ts = _np.tile(I, (num,1,1,1,1))
     
@@ -67,9 +67,11 @@ for i in range(30):
     velocities = _np.gradient(positions) / _np.gradient(observed_times)
 
     torques_kp = -30 * positions
-    torques   = torques_kp + _np.random.random(num)
-    #torques   = 10.0 * observed_phases[:,0] + 2 * (_np.random.random(num)-0.5)
-    impulses  = _scipy.integrate.cumtrapz(torques, x=observed_times, initial=_np.mean(torques_kp))
+    torques   = (torques_kp + _np.random.random(num)) / duration
+    impulses  = -30 * observed_phases[:,0]
+    torques  =_np.gradient(impulses) / _np.gradient(observed_times)
+    
+    _scipy.integrate.cumtrapz(torques, x=observed_times, initial=0.0) 
 
     #fill into values array:
     data = {

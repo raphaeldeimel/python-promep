@@ -65,7 +65,7 @@ p.plotCovarianceTensor()
 
 
 
-m = p.getDistribution([0.5])
+m = p.getDistribution(generalized_phase=[0.5, 1.0, 1.0])
 
 
 

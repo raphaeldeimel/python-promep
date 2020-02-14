@@ -39,7 +39,7 @@ class LTIGoal(object):
         
         self.tns = _nt.TensorNameSpace()
         if mechanicalstate is not None:            
-            [ self.registerIndex(iname,mechanicalstate.index_sizes[iname]) for iname in mechanicalstate.index_sizes ]
+            [ self.registerIndex(iname,mechanicalstate.tns.indexSizes[iname]) for iname in mechanicalstate.tns.indexSizes ]
         else: #assume default sizes:
             self.tns.registerIndex('r',2)
             self.tns.registerIndex('g',2)
@@ -172,7 +172,7 @@ class LTIGoal(object):
 
         self.tns.update(self.operations_every_time)
         
-        return MechanicalStateDistribution(self.tns.tensorData['mean'], self.tns.tensorData['cov'])
+        return MechanicalStateDistribution(self.tns, 'mean', 'cov')
     
     
     
@@ -288,7 +288,7 @@ class LTIGoal(object):
         if dofs_to_plot=='all':
             dofs_to_plot=list(range(self.tns.indexSizes['d']))
 
-        mStateNames = list(self.tns.names2rg)
+        mStateNames = list(self.tns.commonnames2rg)
         mstates = len(mStateNames)
 
         #if no mass matrix inverse is provided, assume a decoupled unit mass system for plotting
@@ -351,8 +351,8 @@ class LTIGoal(object):
             for limitname in limits:
                 for m in range(data_mean.shape[1]):
                     mstateIndex = self._md.mStateNames2Index[limitname]
-                    sigma =tns_plot.tensorData['data_sigma'][self.names2rg[limitname]]
-                    mean =tns_plot.tensorData['data_mean'][self.names2rg[limitname]]
+                    sigma =tns_plot.tensorData['data_sigma'][self.commonnames2rg[limitname]]
+                    mean =tns_plot.tensorData['data_mean'][self.commonnames2rg[limitname]]
                     limits[limitname][0] = min(_np.min(mean-1.96*sigma), limits[limitname][0])
                     limits[limitname][1] = max(_np.max(mean+1.96*sigma), limits[limitname][1])
             #plot all dofs
