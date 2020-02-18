@@ -35,24 +35,13 @@ from  scipy.special import betainc as _betainc
 from sklearn import covariance as _sklearncovariance
 
 
+def gradient(series):
+    g = _np.zeros_like(series)
+    g[1:-1] = 0.5* (series[2:] - series[0:-2])
+    g[0] = series[1] - series[0]
+    g[-1] = series[-1] - series[-2]
+    return g
 
-
-#set a sensible default color map for correlations
-_cmapCorrelations = _mpl.colors.LinearSegmentedColormap('Correlations', {
-         'red':   ((0.0, 0.2, 0.2),
-                   (0.33, 1.0, 1.0),
-                   (1.0, 1.0, 1.0)),
-
-         'green': ((0.0, 0.0, 0.0),
-                   (0.33, 1.0, 1.0),
-                   (0.66, 1.0, 1.0),
-                   (1.0, 0.0, 0.0)),
-
-         'blue':  ((0.0, 0.0, 1.0),
-                   (0.66, 1.0, 1.0),
-                   (1.0, 0.2, 0.2))
-        }
-)
 
 
 
@@ -249,7 +238,7 @@ class ProMeP(object):
 
         #some initial plot range values so we can plot something at all
         self.plot_range_guesses = { 'torque': [-20,20], 'position': [-1.5,1.5], 'velocity': [-2.0,2.0], 'gains': [-10,100.0],}
-        
+        self.parameterMask = None  #the mask used for learning parameters
 
     def __repr__(self):
         strings = ["Indices:"]
@@ -431,11 +420,11 @@ meansMatrix
     def plot(self, dofs='all',
                    whatToPlot=['position', 'velocity', 'kp', 'kv', 'int_kv','int_ka', 'impulse', 'torque'],
                    num=101,
-                   linewidth=0.5,
+                   linewidth=1.0,
                    addExampleTrajectories=10,
                    withConfidenceInterval=True,
                    plotRanges = None,
-                   exampleTrajectoryStyleCycler=_plt.cycler('color', ['#6666FF']),
+                   exampleTrajectoryStyleCycler=_plt.cycler('color', [(0.0,0.0,0.8)]),
                    useTime=True,
                    margin=0.05
                    ):
@@ -450,7 +439,7 @@ meansMatrix
         supportsColor = '#008888'
         confidenceColor = "#DDDDDD"
         meansColor = '#BBBBBB'
-        observedColor = '#880000'
+        observedColor = (0.8,0.0,0.0)
         kpColor = '#000000'
         kvColor = '#000000'
         kpCrossColor = '#666666'
@@ -459,18 +448,15 @@ meansMatrix
         phases = _np.zeros((num, self.tns.indexSizes['gphi']))
         
         if useTime: 
-            times = _np.linspace(0, self.expected_duration, num)     
             phases[:,0] = _kumaraswamy.cdf(self.expected_phase_profile_params[0], self.expected_phase_profile_params[1], _np.linspace(0,1.0,num))
-            plot_x = times
+            plot_x = _np.linspace(0, self.expected_duration, num) #linear time
+            for g_idx in range(1,self.tns.indexSizes['gphi']):
+                phases[:,g_idx] = gradient(phases[:,g_idx-1]) * num / self.expected_duration 
         else:
             phases[:,0] = _np.linspace(0.0, 1.0, num)
             plot_x = phases[:,0]
-            
-        if self.tns.indexSizes['gphi'] > 1:
-            if useTime:
-                phases[:,1] = _kumaraswamy.pdf(self.expected_phase_profile_params[0], self.expected_phase_profile_params[1], _np.linspace(0,1.0,num))
-            else:
-                phases[:,1] = 1.0
+            phases[:,1] = 1.0
+
 
         if useTime:
             units={
@@ -559,10 +545,35 @@ meansMatrix
                         axesArray[row_idx,col_idx].fill_between(plot_x,lower_boundary, upper_boundary, label="95%",  color=confidenceColor)
                     axesArray[row_idx,col_idx].plot(plot_x,meanvalues, label="mean",  color=meansColor)
 
+
+        if 'observedTrajectories' in self.__dict__: #plot observations after scaling y axes
+            alpha = _np.clip(1.0 / _np.sqrt(1.0*len(self.observedTrajectories)), 0.1, 1.0)
+            linewidthfactor =  1.0 / (alpha *_np.sqrt(1.0*len(self.observedTrajectories)))
+            for observation_idx, (times, phases_observation, values, Xrefs, Yrefs, Ts) in enumerate(self.observedTrajectories): 
+                for row_idx, row_name in enumerate(whatToPlot):
+                    if len(self.commonnames2rg[row_name])==4: #is a name for a gain
+                        continue
+                    r_idx, g_idx = self.commonnames2rg[row_name]
+                    if useTime:
+                        y = values[:,r_idx,g_idx,:]
+                        for col_idx, dof in enumerate(dofs_to_plot):
+                            axesArray[ row_idx, col_idx].plot(times, y[:,dof], alpha=alpha, linewidth=linewidth*linewidthfactor, color=observedColor )
+                    else:
+                        if phases_observation.shape[1] > g_idx:   #only plot in phase if we have phase derivatives to scale observations with 
+                            if g_idx > 0:
+                                scaler = 1.0 / phases_observation[:,1]
+                                y = values[:,r_idx,g_idx,:] * (scaler[:,None]**g_idx)
+                            else:
+                                y = values[:,r_idx,g_idx,:]
+                            for col_idx, dof in enumerate(dofs_to_plot):
+                                axesArray[ row_idx, col_idx].plot(phases_observation[:,0], y[:,dof], alpha=alpha, linewidth=linewidth*linewidthfactor, color=observedColor)
+
+
+
         #sample the distribution to plot actual trajectories, times the number given by "addExampleTrajectories":
         if addExampleTrajectories is None:
             addExampleTrajectories = 0
-        alpha = _np.sqrt(2.0 / (1+addExampleTrajectories))
+        alpha = _np.clip(1.0 / _np.sqrt(1.0*(1+addExampleTrajectories)), 0.1, 1.0)
         for ax in axesArray.flatten():
             ax.set_prop_cycle(exampleTrajectoryStyleCycler)
 
@@ -580,10 +591,17 @@ meansMatrix
         #set ylimits to be equal in each row and xlimits to be equal everywhere
         for row_idx, row_name in enumerate(whatToPlot):
                 axes_row = axesArray[row_idx,:]  
-                ylimits  = _np.array([ ax.get_ylim() for ax in axes_row ])
-                ylimit_common = _np.max(ylimits, axis=0)
-                ylimit_common_symm = _np.max(_np.abs(ylimits))
-                ylimit_common = (-ylimit_common_symm, ylimit_common_symm) 
+                if plotRanges is None or not row_name in plotRanges:
+                    ylimits  = _np.array([ ax.get_ylim() for ax in axes_row ])
+                    ylimit_common = _np.max(ylimits, axis=0)
+                    ylimit_common_symm = _np.max(_np.abs(ylimits))
+                    ylimit_common = (-ylimit_common_symm, ylimit_common_symm) 
+                else:
+                    if _np.isscalar(plotRanges[row_name]):
+                        ylimit_common = (-plotRanges[row_name], plotRanges[row_name]) #else treat it as a single value
+                    else:
+                        ylimit_common = plotRanges[row_name][0:2]  #try using it as a2-tuple
+                        
                 for dof, ax in zip(dofs_to_plot, axes_row):
                     ax.set_title('\detokenize{{{} {}}}'.format(row_name, dof))
                     ax.set_ylim(ylimit_common)                
@@ -594,25 +612,6 @@ meansMatrix
                     ax.set_yticks(yticks)
                     ax.set_yticklabels(yticklabels)
 
-        if 'observedTrajectories' in self.__dict__: #plot observations after scaling y axes
-            for observation_idx, (times, phases_observation, values, Xrefs, Yrefs, Ts) in enumerate(self.observedTrajectories):        
-                for row_idx, row_name in enumerate(whatToPlot):
-                    if len(self.commonnames2rg[row_name])==4: #is a name for a gain
-                        continue
-                    r_idx, g_idx = self.commonnames2rg[row_name]
-                    if useTime:
-                        y = values[:,r_idx,g_idx,:]
-                        for col_idx, dof in enumerate(dofs_to_plot):
-                            axesArray[ row_idx, col_idx].plot(times, y[:,dof], alpha=alpha, linewidth=linewidth, color=observedColor )
-                    else:
-                        if phases_observation.shape[1] > g_idx:   #only plot in phase if we have phase derivatives to scale observations with 
-                            if g_idx > 0:
-                                scaler = 1.0 / phases_observation[:,1]
-                                y = values[:,r_idx,g_idx,:] * (scaler[:,None]**g_idx)
-                            else:
-                                y = values[:,r_idx,g_idx,:]
-                            for col_idx, dof in enumerate(dofs_to_plot):
-                                axesArray[ row_idx, col_idx].plot(phases_observation[:,0], y[:,dof], alpha=alpha, linewidth=linewidth, color=observedColor )
 
 
 
@@ -642,7 +641,7 @@ meansMatrix
         return fig
 
 
-    def plotCovarianceTensor(self, normalize_indices='rg'):
+    def plotCovarianceTensor(self, normalize_indices='rg', color_maskedvalues=(0.9, 0.9, 0.9), omit_masked_parameters=False):
         """
         plot the covariances/correlations in parameter space
         
@@ -673,13 +672,23 @@ meansMatrix
         cov_scaled = sigmamax_inv[:,:,:,:, None,None,None,None] * cov * sigmamax_inv[None,None,None,None, :,:,:,:] 
         vmax=_np.max(cov_scaled)
 
-        cov_reordered =_np.transpose(cov_scaled, axes=(2,0,1,3, 2+4,0+4,1+4,3+4)) #to srgd
+        #mask covariances that are not useful to interpretation as the underlying parameters were masked during learning
+        if self.parameterMask is None or not omit_masked_parameters:
+            cov_masked = cov_scaled
+        else:
+            m = _np.logical_or(self.parameterMask[:,:,:,:,None,None,None,None],self.parameterMask[None,None,None,None,:,:,:,:])
+            cov_masked = _np.ma.masked_array(cov_scaled, mask=m)
+
+        cov_reordered =_np.transpose(cov_masked, axes=(2,0,1,3, 2+4,0+4,1+4,3+4)) #to srgd
         image =_np.reshape(cov_reordered, self.tns.tensorShapeFlattened['Wcov'])
-        gridvectorX = _np.arange(0, image.shape[0], 1)
-        gridvectorY = _np.arange(image.shape[1], 0, -1)
+
+        gridvectorX = _np.arange(0, image.shape[0]+1, 1)
+        gridvectorY = _np.arange(image.shape[1], -1, -1)
 
         fig = _plt.figure(figsize=(3.4,3.4))
         _plt.pcolor(gridvectorX, gridvectorY, image, cmap=_cmapCorrelations, vmin=-vmax, vmax=vmax)
+        #_plt.pcolor(gridvectorX, gridvectorY, mask , facecolor=('g'), vmin=0.0, vmax=1.0)
+        fig.axes[0].set_facecolor(color_maskedvalues)
         
         _plt.axis([0, image.shape[0], 0, image.shape[1]])
         _plt.gca().set_aspect('equal', 'box')
@@ -690,23 +699,28 @@ meansMatrix
         len_dtilde = self.tns.indexSizes['dtilde']
         len_gtilde = self.tns.indexSizes['gtilde']
         line_positions = _np.reshape(_np.arange(self.tns.tensorShapeFlattened['Wcov'][0]), cov_reordered.shape[:4])
+        linewidth_base=1.0
         for r_idx in range(len_rtilde):
           for g_idx in range(len_gtilde):
             for s_idx in range(len_stilde):
                 for d_idx in range(len_dtilde):
-                    linewidth=0.5
+                    linewidth=linewidth_base
                     linestyle='-'
+                    color=(0,0,0)
                     if r_idx!=0:
-                        linewidth=0.2
+                        linewidth=0.1*linewidth_base
                         linestyle='-'
+                        color=(0.5,0.5,0.5)
                     if g_idx!=0:
-                        linewidth=0.2
+                        linewidth=0.1*linewidth_base
                         linestyle=':'
+                        color=(0.5,0.5,0.5)
                     if d_idx!=0:
                         linewidth=0.0
+                        color=(0.8,0.8,0.8)
                     if linewidth>0.0:
-                        _plt.axhline(line_positions[s_idx,r_idx, g_idx,d_idx], color='k', linewidth=linewidth, linestyle=linestyle)
-                        _plt.axvline(line_positions[s_idx,r_idx, g_idx,d_idx], color='k', linewidth=linewidth, linestyle=linestyle)
+                        _plt.axhline(line_positions[s_idx,r_idx, g_idx,d_idx], color=color, linewidth=linewidth, linestyle=linestyle)
+                        _plt.axvline(line_positions[s_idx,r_idx, g_idx,d_idx], color=color, linewidth=linewidth, linestyle=linestyle)
 
         baselength = len_gtilde*len_dtilde
         ticklabels = []
@@ -742,10 +756,10 @@ meansMatrix
             for r in range(len_rtilde):
                 for g in range(len_gtilde):
                     ticks.append( (((s)*len_rtilde + r)*len_gtilde + g)*len_dtilde + len_dtilde/2 )
-                    ticklabels.append(g)
-                    offsets.append(-1.0)
+                    ticklabels.append(  '\detokenize{{{}}}'.format(self.rg_commonnames[r][g]))
+                    offsets.append(-0.2)
         for tick, label, offset in zip(ticks, ticklabels, offsets):
-            t = _plt.text(tick, offset, label, fontdict={'verticalalignment':'top', 'horizontalalignment':'center', 'size':'xx-small'}, rotation=0)
+            t = _plt.text(tick, offset, label, fontdict={'verticalalignment':'top', 'horizontalalignment':'center', 'size':'xx-small'}, rotation=90)
         _plt.text(ticks[-1]+10, 0.0, "$\widetilde{g}$", fontdict={'verticalalignment':'top', 'horizontalalignment':'left', 'size':'small'})
             
         _plt.xticks([])
@@ -758,28 +772,24 @@ meansMatrix
 
 
     def plotExpectedPhase(self):
-        fig = _plt.figure()
-        x = _np.linspace(0.0, 1.0, 200)
+        """
+        Visualize the phase curve expected by this ProMeP
+        """
+        fig= _plt.figure()
+        num=200
+        x = _np.linspace(0.0, 1.0, num)
         y = _kumaraswamy.cdf(self.expected_phase_profile_params[0],self.expected_phase_profile_params[1],x)
+        ydot  = gradient(y) * num # / self.expected_duration
         _plt.plot(self.expected_duration*x,y)
         _plt.xlabel('Time')
         _plt.ylabel('Phase')
         if 'observed_phaseprofiles' in self.__dict__:    
-            _plt.plot(self.expected_duration*self.observed_phaseprofiles[:,0], self.observed_phaseprofiles[:,1], '.', color='black')        
+            _plt.plot(self.expected_duration*self.observed_phaseprofiles[:,0], self.observed_phaseprofiles[:,1], '.', color=(0.8,0.5,0.5))        
+        ax_right = _plt.gca().twinx()
+        ax_right.plot(self.expected_duration*x,ydot, color=(0.6,0.6,0.6), linewidth=0.3)
+        ax_right.set_ylabel('Phase velocity')
         _plt.tight_layout()
         return fig
-
-#    def plotLearningProgress(self):
-#        """
-#        plot a graph of the learning progress, as determined by the negative log-likelihood over the training data
-#        """
-#        if not 'negLLHistory' in self.__dict__:
-#            raise RuntimeWarning("No learning has happened - cannot plot progress.")
-#        _plt.figure()
-#        _plt.plot(self.negLLHistory)
-#        _plt.xlabel("Iteration")
-#        _plt.ylabel("-log( p(data|W) )")
-#        _plt.ylim(0, 10 * _np.mean(self.negLLHistory[-10:]))
 
         
     def learnFromObservations(self, 
@@ -789,6 +799,7 @@ meansMatrix
             target_space_observations_indices = (('r','g','d'),()),
             task_space_observations_indices = (('rtilde', 'g', 'dtilde'),()),
             task_map_observations_indices= (('r', 'd'),('rtilde', 'dtilde')),
+            mask = None,
             ):
         """
         
@@ -813,6 +824,16 @@ meansMatrix
         #subtract the offset caused by the task map linearization when computing the per-sample data, so during learning we ignore Xref and Yref
         tns_perSample.registerTensor('Yobserved', (('r', 'g', 'd'),()) )
         tns_perSample.registerSubtraction('Yobserved', 'O', result_name='Yhatslice')
+
+        tns_perSample.renameIndices('PSI', {'rtilde': 'rtilde_', 'gtilde': 'gtilde_', 'stilde': 'stilde_', 'dtilde': 'dtilde_', })
+        tns_perSample.registerTensor('mask', (('rtilde_', 'gtilde_', 'stilde_', 'dtilde_'),('rtilde', 'gtilde', 'stilde', 'dtilde')) , initial_values='identity')
+        tns_perSample.registerTensor('parameterMask', (('rtilde', 'gtilde', 'stilde', 'dtilde'),()))
+        if mask != None:       
+            for indices in mask:
+                tns_perSample.setTensorSlice('mask', indices, 0.0)
+                tns_perSample.setTensorSlice('parameterMask', indices, 1.0)
+            self.parameterMask = tns_perSample.tensorData['parameterMask'].copy()
+        tns_perSample.registerContraction('renamed(PSI)', 'mask', result_name='PSImasked')
         
         self.tns_perSample = tns_perSample
         #we only need to compute until we have PSI:
@@ -827,6 +848,10 @@ meansMatrix
             if isinstance(observation, tuple):   #old interface: tuple of arrays
                 times, phases, values, Xrefs, Yrefs, Ts = observation
                 samples_total = phases.shape[0]
+                if phases.shape[0] != values.shape[0]:
+                    raise ValueError()
+                if phases.shape[0] != times.shape[0]:
+                    raise ValueError()
             elif isinstance(observation, _pandas.DataFrame): #preferred one: pandas dataframe
                 samples_total = len(observation.index)
                 data_shape = (samples, self.tns.indexSizes['r'],self.tns.indexSizes['g'],self.tns.indexSizes['d'])
@@ -841,11 +866,6 @@ meansMatrix
                                 print("Warning:observations do not contain values for {}".format(name))
                                 values[:, r_idx, g_idx, d_idx] = 0.0
 
-#                for name in self.commonnames2rg: 
-#                    r_idx, g_idx = self.commonnames2rg[name]
-#                    for d_idx in range(8):
-#                        values[:, r_idx, g_idx, d_idx] = observation[ ('observed', name, d_idx) ]
-#            
                 times = observation['t']
                 phases = observation[['phi','dphidt','ddphidt2']]
                 #setup for joint-space learning:
@@ -854,17 +874,28 @@ meansMatrix
                 Ts = _np.tile(T_jointspace, (samples,1,1,1,1))
             else:
                 raise ValueError("Unsupported data structure for observations argument")
-            
-            #compute how we partition the observation samples into subsets to reduce computational effort and increase the number of w samples available for covariance estimation:
-            samplesetsize  = self.tns.indexSizes['stilde'] * 3  #no need to add much more samples than we have interpolation parameters over time
-            partitions = samples_total // samplesetsize
-            #construct an array of shuffled indices:
-            sampleindices = _np.arange(partitions * samplesetsize)
+
+            #make sure we don't rely on the order that samples are specified in. also makes sure that contiguous partitions are likely to cover the whole trajectory:
+            sampleindices = _np.arange(samples_total)
             _np.random.shuffle(sampleindices)
-            sampleindices.shape = (partitions, samplesetsize)
 
-
-            for partition in range(partitions):
+            #compute how we partition the observation samples into subsets to reduce computational effort and increase the number of w samples available for covariance estimation:
+            target_samplesetsize  = self.tns.indexSizes['stilde'] * 3  #no need to add much more samples than we have interpolation parameters over time            
+            
+            partitions = samples_total // target_samplesetsize
+            samplesetsize = samples_total // partitions
+            orphans = samples_total % partitions
+            partitions_startindices = _np.array([samplesetsize *i for i in range(partitions+1) ])
+            for o in range(orphans+1):
+                i = partitions - orphans + o
+                partitions_startindices[i]  = partitions_startindices[i] + o
+            partitions_startindices[-1] = samples_total #make sure to not lose any samples / go beyond last sample
+            
+            for partition_idx in range(partitions):
+                
+                
+                sampleindices_partition = sampleindices[partitions_startindices[partition_idx]:partitions_startindices[partition_idx+1]]
+                samplesetsize = sampleindices_partition.size
                 
                 tns_perObservation = _namedtensors.TensorNameSpace(self.tns)
                 self.tns_Observations.append(tns_perObservation)            
@@ -897,7 +928,7 @@ meansMatrix
 
 
                 #preprocess samples into pairs of Yhat and PSIhat for each observation:
-                for i, sample in enumerate(sampleindices[partition,:]):
+                for i, sample in enumerate(sampleindices_partition):
                     #compute PSIi:
                     tns_perSample.setTensor('Xref',       Xrefs[sample,...], task_space_observations_indices ) 
                     tns_perSample.setTensor('Yref',       Yrefs[sample,...], target_space_observations_indices )                
@@ -905,7 +936,7 @@ meansMatrix
                     tns_perSample.setTensor('phase',     phases[sample,...], (('g'),()) )
                     tns_perSample.setTensor('Yobserved', values[sample,...], target_space_observations_indices )          
                     tns_perSample.update()
-                    tns_perObservation.setTensorSlice('PSIhat', {'samples': i}, 'PSI',        slice_namespace=tns_perSample)
+                    tns_perObservation.setTensorSlice('PSIhat', {'samples': i}, 'PSImasked',  slice_namespace=tns_perSample)
                     tns_perObservation.setTensorSlice('Yhat',   {'samples': i}, 'Yhatslice',  slice_namespace=tns_perSample)
                     
                     
@@ -919,7 +950,7 @@ meansMatrix
         relative_ll_changes = 1.0
         
         self.tns.setTensor('Wmean', 10.0)
-        self.tns.setTensorToIdentity('Wcov', scale=100)
+        self.tns.setTensorToIdentity('Wcov', scale=1000.0)  #start with a very large variance - observations will only propagate this value in their nullspace
         negLLHistory = []
         [tns_local.update() for tns_local in tns_Observations]#do precomputation
         
@@ -951,7 +982,24 @@ meansMatrix
             
             self.tns.addToTensor('Wmean', deltaW, deltaW_indices)
             self.tns.setTensor('Wcov', Wcov, Wcov_indices)
-            
+            self.tns.setTensor('Wcov', Wcov, Wcov_indices)
+
+            #mask out parameters that we dont learn:
+            if mask != None:                   
+                mask_ = []
+                for indices in mask:
+                    indices_ = {}
+                    for index in indices:
+                        indices_[index+'_'] = indices[index]
+                    mask_.append(indices_)
+                    
+                for indices in mask_:
+                    self.tns.setTensorSlice('Wcov', indices, 0.0)
+                for indices in mask:
+                    self.tns.setTensorSlice('Wcov', indices, 0.0)
+                    self.tns.setTensorSlice('Wmean', indices, 0.0)
+
+
             rms = _np.sqrt(_np.mean(deltaW * deltaW))
             negLLHistory.append(rms)
 
@@ -962,6 +1010,7 @@ meansMatrix
                 print("Residual mean error (RMS) after {} iterations: {}".format(iteration_count, rms))
                 
         self.expected_duration = _np.mean([times[-1] for(times, phases, values, Xrefs, Yrefs, Ts) in observations])
+        self.expected_duration_sigma = _np.std( [times[-1] - self.expected_duration for(times, phases, values, Xrefs, Yrefs, Ts) in observations], ddof=1)
         
         
         #estimate a phase profile too:
@@ -1177,7 +1226,7 @@ def _updateP(tns, in_tensor_names, out_tensor_names):
         
     P = tns.tensorData[out_tensor_names[0]]
     phase_fdb=_np.zeros((4))
-    phase_fdb[:tns.indexSizes['gphi']] = tns.tensorData[in_tensor_names[0]]
+    phase_fdb[:tns.indexSizes['gphi']] = tns.tensorData[in_tensor_names[0]][:tns.indexSizes['gphi']] #only use as many derivatives as specified
     
     
     #compute the scaling factors according to Faa di Brunos formula
@@ -1202,4 +1251,24 @@ def _updateP(tns, in_tensor_names, out_tensor_names):
             #index order: g, gphi, gtilde
             P[g_start:,:,gtilde] = faadibruno[:fdb_g_end,:tns.indexSizes['gphi']]
 
+
+
+
+
+#default color map used for correlations/covariances plots:
+_cmapCorrelations = _mpl.colors.LinearSegmentedColormap('Correlations', {
+         'red':   ((0.0, 0.2, 0.2),
+                   (0.33, 1.0, 1.0),
+                   (1.0, 1.0, 1.0)),
+
+         'green': ((0.0, 0.0, 0.0),
+                   (0.33, 1.0, 1.0),
+                   (0.66, 1.0, 1.0),
+                   (1.0, 0.0, 0.0)),
+
+         'blue':  ((0.0, 0.0, 1.0),
+                   (0.66, 1.0, 1.0),
+                   (1.0, 0.2, 0.2))
+        }
+)
 
