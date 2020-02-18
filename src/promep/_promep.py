@@ -523,7 +523,8 @@ meansMatrix
         fig, axesArray = _plt.subplots(plotrows,len(dofs_to_plot), squeeze=False, figsize=(max(len(dofs_to_plot), plotrows)*subplotfigsize, plotrows*subplotfigsize), sharex='all', sharey='row')
         for ax in axesArray.flat:
             ax.margins(x=0.0, y=margin)
-            
+        _plt.suptitle('trajectories')
+  
         #draw confidence intervals and means/variance indicators for the supports
         #plot the zero-variance trajectory + 95% confidence interval        
         for row_idx, row_name in enumerate(whatToPlot):
@@ -686,6 +687,7 @@ meansMatrix
         gridvectorY = _np.arange(image.shape[1], -1, -1)
 
         fig = _plt.figure(figsize=(3.4,3.4))
+        _plt.suptitle('covariances')        
         _plt.pcolor(gridvectorX, gridvectorY, image, cmap=_cmapCorrelations, vmin=-vmax, vmax=vmax)
         #_plt.pcolor(gridvectorX, gridvectorY, mask , facecolor=('g'), vmin=0.0, vmax=1.0)
         fig.axes[0].set_facecolor(color_maskedvalues)
@@ -786,6 +788,7 @@ meansMatrix
         _plt.plot(self.expected_duration*x,y, color=(0.2,0.2,1.0))
         _plt.xlabel('Time')
         _plt.ylabel('Phase')
+        _plt.suptitle('expectedphase')
         ax_right = _plt.gca().twinx()
         ax_right.plot(self.expected_duration*x,ydot, color=(0.6,0.6,0.6), linewidth=0.3)
         ax_right.set_ylabel('Phase velocity')

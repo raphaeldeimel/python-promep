@@ -103,21 +103,10 @@ p.plot(useTime=False)
 
 p.plotCovarianceTensor()
 
-if __name__=='__main__':
-    import os
-    try:
-        os.mkdir('plots')
-    except FileExistsError:
-        pass
-    
-    for n in pylab.get_fignums():    
-        myname = os.path.splitext(os.path.basename(__file__))[0]
-        if "REFERENCE" in os.environ:
-            filename="./plots/{0}_fig{1}_ref.pdf".format(myname,n)
-        else:
-            filename="./plots/{0}_fig{1}.pdf".format(myname,n)
-        pylab.figure(n).savefig(filename)
-        
-        
 
-        
+
+
+
+if __name__=='__main__':
+    import common
+    common.savePlots()

@@ -43,7 +43,7 @@ observations = []
 free_variables = []
 for i in range(30):
     duration = (_np.random.random() + 0.1) * 10.0
-    offset = 1.0 * (_np.random.random() - 0.5)
+    offset = 5.0 * (_np.random.random() - 0.5)
     free_variables.append((duration, offset))
     
     observed_times = _np.linspace(0, duration, num)
@@ -67,7 +67,8 @@ for i in range(30):
     velocities = _np.gradient(positions) / _np.gradient(observed_times)
 
     torques_kp = -30 * positions
-    torques   = torques_kp + _np.random.random(num)
+    torques_kv = -30 * velocities
+    torques   = torques_kp  + _np.random.random(num) #+5*_np.cos(_np.linspace(0, num, num) + 6.28 *_np.random.random())
     #torques   = 10.0 * observed_phases[:,0] + 2 * (_np.random.random(num)-0.5)
     impulses  = _scipy.integrate.cumtrapz(torques, x=observed_times, initial=_np.mean(torques_kp))
 
@@ -90,8 +91,12 @@ for i in range(30):
     observations.append( (observed_times, observed_phases,observed_values, observed_Xrefs,observed_Yrefs, observed_Ts) )
 
     
+mask = [
+    {'rtilde': 'effort', 'gtilde': 1},
+    {'rtilde': 'motion', 'gtilde': 1},
+]
 
-p.learnFromObservations(observations, max_iterations=500)
+p.learnFromObservations(observations, max_iterations=500, mask=mask)
 p.saveToFile(path='./temp')
 
 #p.plotLearningProgress()
@@ -101,21 +106,12 @@ p.plot(useTime=False)
 
 p.plotCovarianceTensor()
 
+
+
+
+
 if __name__=='__main__':
-    import os
-    try:
-        os.mkdir('plots')
-    except FileExistsError:
-        pass
-    
-    for n in pylab.get_fignums():    
-        myname = os.path.splitext(os.path.basename(__file__))[0]
-        if "REFERENCE" in os.environ:
-            filename="./plots/{0}_fig{1}_ref.pdf".format(myname,n)
-        else:
-            filename="./plots/{0}_fig{1}.pdf".format(myname,n)
-        pylab.figure(n).savefig(filename)
-        
-        
+    import common
+    common.savePlots()
 
         
