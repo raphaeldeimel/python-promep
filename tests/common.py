@@ -23,7 +23,6 @@ def savePlots():
     for n in pylab.get_fignums():    
         fig = pylab.figure(n)
         ax  = fig.axes[0]
-        ax.title.set_visible(False)        
         if not fig._suptitle is None:
             title=fig._suptitle.get_text()
             fig._suptitle.set_visible(False)
