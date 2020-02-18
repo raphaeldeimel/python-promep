@@ -779,12 +779,13 @@ meansMatrix
         num=200
         x = _np.linspace(0.0, 1.0, num)
         y = _kumaraswamy.cdf(self.expected_phase_profile_params[0],self.expected_phase_profile_params[1],x)
-        ydot  = gradient(y) * num # / self.expected_duration
-        _plt.plot(self.expected_duration*x,y)
-        _plt.xlabel('Time')
-        _plt.ylabel('Phase')
+        ydot  = gradient(y) * num / self.expected_duration
         if 'observed_phaseprofiles' in self.__dict__:    
             _plt.plot(self.expected_duration*self.observed_phaseprofiles[:,0], self.observed_phaseprofiles[:,1], '.', color=(0.8,0.5,0.5))        
+
+        _plt.plot(self.expected_duration*x,y, color=(0.2,0.2,1.0))
+        _plt.xlabel('Time')
+        _plt.ylabel('Phase')
         ax_right = _plt.gca().twinx()
         ax_right.plot(self.expected_duration*x,ydot, color=(0.6,0.6,0.6), linewidth=0.3)
         ax_right.set_ylabel('Phase velocity')
