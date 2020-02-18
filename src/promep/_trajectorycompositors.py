@@ -72,22 +72,22 @@ class TrajectoryCompositorGaussian(object):
         nthDerivative = Bases0thDerivativeAll
         for gphi in range(self.indexSizes['gphi']):
             #aggregate the repeated supports beyond the interval into the first and last one:
-            out_array[gphi,:] = nthDerivative[self._repeatExtremalSupports:-self._repeatExtremalSupports]
-            out_array[gphi,0]  += _np.sum(nthDerivative[:self._repeatExtremalSupports])
-            out_array[gphi,-1] += _np.sum(nthDerivative[-self._repeatExtremalSupports:])
+                out_array[gphi,:] = nthDerivative[self._repeatExtremalSupports:-self._repeatExtremalSupports]
+                out_array[gphi,0]  += _np.sum(nthDerivative[:self._repeatExtremalSupports])
+                out_array[gphi,-1] += _np.sum(nthDerivative[-self._repeatExtremalSupports:])
             nthDerivative = distances * self._c *  nthDerivative        
         return # data written to out_array 
 
 
-    def update(self, out_tns,  in_tensor_names, out_tensor_names):
+    def update(self, tns,  in_tensor_names, out_tensor_names):
         """
         updates the interpolation tensor in the calling object's tensor manager
         """
-        if not self._parenttensornamespace is out_tns: #if things changed: reconfigure
-            self._configure(out_tns)
-        phase = in_tensor_names[0]
-        phi = out_tensor_names[0]
-        self._evaluateBasisFunctions(out_tns.tensorData[phase][0], out_array = out_tns.tensorData[phi])
+        if not self._parenttensornamespace is tns: #if things changed: reconfigure on-the-fly
+            self._configure(tns)
+        phasename = in_tensor_names[0]
+        phiname = out_tensor_names[0]
+        self._evaluateBasisFunctions(tns.tensorData[phasename][0], out_array = tns.tensorData[phiname])
 
 
     def getPhi(self, phase, out_array=None):
