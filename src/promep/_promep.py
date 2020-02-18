@@ -455,7 +455,8 @@ meansMatrix
         else:
             phases[:,0] = _np.linspace(0.0, 1.0, num)
             plot_x = phases[:,0]
-            phases[:,1] = 1.0
+            if self.tns.indexSizes['gphi'] > 1:
+                phases[:,1] = 1.0
 
 
         if useTime:
@@ -687,7 +688,7 @@ meansMatrix
         gridvectorY = _np.arange(image.shape[1], -1, -1)
 
         fig = _plt.figure(figsize=(3.4,3.4))
-        _plt.suptitle('covariances')        
+        _plt.suptitle('covariances_' + normalize_indices)        
         _plt.pcolor(gridvectorX, gridvectorY, image, cmap=_cmapCorrelations, vmin=-vmax, vmax=vmax)
         #_plt.pcolor(gridvectorX, gridvectorY, mask , facecolor=('g'), vmin=0.0, vmax=1.0)
         fig.axes[0].set_facecolor(color_maskedvalues)
