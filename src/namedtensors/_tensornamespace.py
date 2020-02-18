@@ -226,7 +226,7 @@ class TensorNameSpace(object):
             self._setIndexInfo(A, renamed_tuples) 
         else:        
             if result_name is None:
-                result_name = "renamed(A)"
+                result_name = "renamed({})".format(A)
             self.registerTensor(result_name, renamed_tuples, external_array=self.tensorData[A])
 
 
@@ -611,8 +611,11 @@ class TensorNameSpace(object):
 
         #set the specified slice of name to values from slice_name
         slicedtensordata = self.tensorData[name][tuple(slicedef)]
-        values_aligned = self._alignDimensions(sliced_indextuples, slice_namespace.tensorIndices[slice_name], slice_namespace.tensorData[slice_name])        
-        _np.copyto(slicedtensordata, values_aligned)
+        if _np.isreal(slice_name): #user obviously just wants to set all elements to a common value (e.g. 0)
+            _np.copyto(slicedtensordata, slice_name)        
+        else:
+            values_aligned = self._alignDimensions(sliced_indextuples, slice_namespace.tensorIndices[slice_name] , slice_namespace.tensorData[slice_name])        
+            _np.copyto(slicedtensordata, values_aligned)
 
 
     def makeSliceDef(self, name, sliced_indices_values):
