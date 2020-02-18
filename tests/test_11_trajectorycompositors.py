@@ -50,7 +50,7 @@ for repeatExtremal in (0, 3):
 
         for g in (0,1):
             plt.figure()
-            plt.title("stilde{}_repeatextremal{}".format(len_trajectoryparameters,repeatExtremal ))
+            plt.suptitle("stilde{}repeatextremal{}".format(len_trajectoryparameters,repeatExtremal ))
             for s in range(len_trajectoryparameters):
                 plt.plot(observed_phases, tc[:,g,s])
 
