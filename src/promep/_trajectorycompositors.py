@@ -20,7 +20,7 @@ class TrajectoryCompositorGaussian(object):
             self._configure(tensornamespace)
             
     
-    def _configure(self, tensornamespace):
+    def _configure(self, tensornamespace, repeatExtremalGaussians=3):
         """
         create a trajectory compositor that uses gaussians shifted along phase (used in ProMePs)
         
@@ -30,7 +30,11 @@ class TrajectoryCompositorGaussian(object):
         
         #some fixed parameters:
         clip_at_sigma = 3.0  #at how many sigmas should the gaussian drop to 0.0? (I.e. to remove its long tail)
-        self._repeatExtremalSupports = 3
+        self._repeatExtremalGaussians = repeatExtremalGaussians
+        
+        self._slice_repeated_gaussians_left = slice(0, self._repeatExtremalGaussians)
+        self._slice_no_repeated_gaussians  = slice(self._repeatExtremalGaussians, self._repeatExtremalGaussians+self.indexSizes['stilde'])
+        self._slice_repeated_gaussians_right = slice(self._repeatExtremalGaussians+self.indexSizes['stilde'], self._repeatExtremalGaussians+self.indexSizes['stilde']+self._repeatExtremalGaussians)
 
         #compute with of the gaussians, and where to suppress the tail completely
         delta = 1.0 / (self.indexSizes['stilde']-1)
@@ -39,10 +43,10 @@ class TrajectoryCompositorGaussian(object):
 
         self._clipAmount = _np.exp(-(1+clip_at_sigma**2))
 
-        start = 0.0 - self._repeatExtremalSupports * delta
-        end   = 1.0 + self._repeatExtremalSupports * delta
-        self._phasesOfSupportsAndRepeated = _np.linspace(start, end, self.indexSizes['stilde']+2*self._repeatExtremalSupports)
-        self.phasesOfSupports = self._phasesOfSupportsAndRepeated[self._repeatExtremalSupports:-self._repeatExtremalSupports]
+        start = 0.0 - self._repeatExtremalGaussians * delta
+        end   = 1.0 + self._repeatExtremalGaussians * delta 
+        self._phasesOfSupportsAndRepeated = _np.linspace(start, end, self.indexSizes['stilde']+2*self._repeatExtremalGaussians)
+        self.phasesOfSupports = self._phasesOfSupportsAndRepeated[self._slice_no_repeated_gaussians]
         #compute the two fixed factors for the gaussian curves:
         self._a = -0.5/(self.sigma**2)  #in exponent
         self._b = 1.0 
@@ -64,6 +68,7 @@ class TrajectoryCompositorGaussian(object):
         """
         #compute values of the basis functions:
         distances = _np.clip(phase, 0.0, 1.0) - self._phasesOfSupportsAndRepeated
+        #distances = phase - self._phasesOfSupportsAndRepeated
 
         Bases0thDerivativeAllUnclipped = self._b * _np.exp(self._a * (distances**2))
         Bases0thDerivativeAll = _np.clip(Bases0thDerivativeAllUnclipped-self._clipAmount, 0.0, _np.inf)
@@ -72,9 +77,9 @@ class TrajectoryCompositorGaussian(object):
         nthDerivative = Bases0thDerivativeAll
         for gphi in range(self.indexSizes['gphi']):
             #aggregate the repeated supports beyond the interval into the first and last one:
-                out_array[gphi,:] = nthDerivative[self._repeatExtremalSupports:-self._repeatExtremalSupports]
-                out_array[gphi,0]  += _np.sum(nthDerivative[:self._repeatExtremalSupports])
-                out_array[gphi,-1] += _np.sum(nthDerivative[-self._repeatExtremalSupports:])
+            out_array[gphi,:] = nthDerivative[self._slice_no_repeated_gaussians]
+            out_array[gphi,0]  += _np.sum(nthDerivative[self._slice_repeated_gaussians_left])
+            out_array[gphi,-1] += _np.sum(nthDerivative[self._slice_repeated_gaussians_right])
             nthDerivative = distances * self._c *  nthDerivative        
         return # data written to out_array 
 
@@ -104,4 +109,9 @@ class TrajectoryCompositorGaussian(object):
         self._evaluateBasisFunctions(phase, out_array)
         return out_array
 
+    def changeExtremalRepetition(self, repeatExtremalGaussians):
+        """
+        This method is mainly to test/compare different repetitions
+        """
+        self._configure(self._parenttensornamespace, repeatExtremalGaussians=repeatExtremalGaussians)
       
