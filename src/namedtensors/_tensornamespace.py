@@ -60,6 +60,7 @@ class TensorNameSpace(object):
         self.tensorDataAsFlattened = {} # flattened view on the actual array
         self.tensorDataAsFlattenedDiagonal = {} # diagonal view on the flattened tensor
         self.tensorDataDiagonal = {} # diagonal view on the tensor
+        self.tensorInitialValues = {} #what the value pattern should be on reset/init of a tensor 
         self.tensorShape = {}
         self.tensorShapeFlattened = {}
         self.registeredScalars = {}
@@ -74,6 +75,8 @@ class TensorNameSpace(object):
         self.registeredMeanOperators = {}
         self.registeredSliceOperations = {}
         self.registeredSumOperations = {}
+        self.registeredResets = {}
+        self.registeredAdditionToSlice = {}
         self._tensordot = _np.tensordot #which library to use
         self.update_order = []
         
@@ -114,6 +117,7 @@ class TensorNameSpace(object):
         else:
             self.indexValues[name] = list(values)
             self.indexValues[name2] = list(values)
+        return name, name2
 
     def registerTensor(self, name, indexTuples, external_array = None, initial_values='zeros'):
         """
@@ -126,7 +130,7 @@ class TensorNameSpace(object):
         (lower case i and t indicate inverses and transposes respectively, '_' indicates contraction)
         """
         if name in self.tensorIndices:
-            raise Warning("tensor name is already registered")
+            raise Warning("tensor name {} is already registered".format(name))
                    
         self._setIndexInfo(name, indexTuples) #add index info to precomputed data structures
                 
@@ -142,26 +146,24 @@ class TensorNameSpace(object):
             self.tensorData[name] = external_array  #set a reference to an external data
         
         self.tensorShape[name] = tensor_shape
-        self.tensorShapeFlattened[name] = tensor_shape_flattened
-        view_flat = self.tensorData[name].view()
-        view_flat.shape = tensor_shape_flattened
-        self.tensorDataAsFlattened[name] = view_flat
+        try:
+            view_flat = self.tensorData[name].view()
+            view_flat.shape = tensor_shape_flattened
+            self.tensorShapeFlattened[name] = tensor_shape_flattened
+            self.tensorDataAsFlattened[name] = view_flat
+            if view_flat.shape[0] == view_flat.shape[1]: #for "square" tensors, construct a view on the diagonal
+                self.tensorDataAsFlattenedDiagonal[name] = _np.einsum('ii->i',view_flat) # diagonal view on the flattened tensor
+                n_upper = len(self.tensorIndices[name][0])
+                self.tensorDataDiagonal[name] = self.tensorDataAsFlattenedDiagonal[name].reshape(self.tensorShape[name][:n_upper]) #un-flattened, i.e. tensor with only upper indices
 
-        if view_flat.shape[0] == view_flat.shape[1]: #for "square" tensors, construct a view on the diagonal
-            self.tensorDataAsFlattenedDiagonal[name] = _np.einsum('ii->i',view_flat) # diagonal view on the flattened tensor
-            n_upper = len(self.tensorIndices[name][0])
-            self.tensorDataDiagonal[name] = self.tensorDataAsFlattenedDiagonal[name].reshape(self.tensorShape[name][:n_upper]) #un-flattened, i.e. tensor with only upper indices
+        except AttributeError:  #if we cannot create a flattened view, warn and continue
+            print('"warning: could not create a flat view for' + name)
+            pass 
+
         
-        if initial_values == 'zeros':
-            self.setTensor(name, 0.0)
-        elif initial_values == 'identity' or 'kroneckerdelta':
-            if any([u != self._flipTrailingUnderline(l) for u,l in zip(*self.tensorIndices[name])]) or len(self.tensorIndices[name][0]) != len(self.tensorIndices[name][1]):
-                raise ValueError("upper and lower indices for initializing to identity / Kronecker delta must match exactly (up to trailing underlines)!")
-            self.setTensorToIdentity(name)
-        elif initial_values == 'ones':
-            self.setTensor(name, 1.0)
-        else:
-            raise ValueError("value of initial_values argument not recognized")
+        self.tensorInitialValues[name] = initial_values
+        self.resetTensor(name)
+
 
     def _setIndexInfo(self, name, indexTuples):
         indexPositions = ({},{})
@@ -197,6 +199,7 @@ class TensorNameSpace(object):
                 else:
                     coord_pos.append(self.indexValues[index_name].index(value))
         self.tensorData[basistensorname][tuple(coord_pos)] = 1.0
+        return basistensorname
 
     def renameIndices(self, A, indices_to_rename, result_name=None, inPlace=False):
         """
@@ -228,7 +231,7 @@ class TensorNameSpace(object):
             if result_name is None:
                 result_name = "renamed({})".format(A)
             self.registerTensor(result_name, renamed_tuples, external_array=self.tensorData[A])
-
+        return result_name
 
     def registerElementwiseMultiplication(self, A, B, result_name=None, out_array=None):
         
@@ -248,14 +251,13 @@ class TensorNameSpace(object):
         self.registerTensor(result_name, self.tensorIndices[A], external_array=out_array)        
         self.registeredElementwiseMultiplications[result_name] = (A, B, B_permuter)
         self.update_order.append(result_name)
-            
+        return result_name            
             
 
     def registerScalarMultiplication(self, A, scalar, result_name=None, out_array=None):
         
         if result_name is None:
-            result_name = tensornameA + '*' + scalar
-    
+            result_name = "({}*{})".format(A,scalar)
     
         if _np.isreal(scalar):
             pass
@@ -267,7 +269,19 @@ class TensorNameSpace(object):
         self.registerTensor(result_name, self.tensorIndices[A], external_array=out_array)        
         self.registeredScalarMultiplications[result_name] = (A, scalar)
         self.update_order.append(result_name)
-    
+        return result_name
+
+    def registerReset(self, A):
+        """
+        If executed, it sets coordinates back to the inital values
+        """
+        result_name = 'reset({})'.format(A)
+        self.registeredResets[result_name] = (A)
+        self.update_order.append(result_name)
+        return result_name
+
+
+
 
     def registerContraction(self, tensornameA, tensornameB, result_name=None, out_array=None, flip_underlines=False, align_result_to=None):
         """
@@ -336,7 +350,7 @@ class TensorNameSpace(object):
         self.registerTensor(result_name, align_result_to, external_array=out_array)
         self.registeredContractions[result_name] = (tensornameA, tensornameB, tuple(tensorDotAxesTuples), permuter)
         self.update_order.append(result_name)
-        return
+        return result_name
 
     def registerTranspose(self, tensorname, result_name=None, flip_underlines=True):
         """
@@ -392,15 +406,43 @@ class TensorNameSpace(object):
         return result_name
 
 
-    def registerAddition(self, A, B, result_name=None, out_array=None, flip_underlines=False, align_result_to=None):
+    def registerAdditionToSlice(self, A, B, slice_indices=None):
         """
         register an addition operation
+        
+        accumulate: if true, add B to A (result_name, align_result_to, out_array, and flip_underlines becomes ineffective)
+        """
+        tuplesA = self.tensorIndices[A]
+        B_permuter = None
+        
+        slicedefB, tuplesB = self.makeSliceDef(B, slice_indices)
+ 
+        try:
+            permuter = [ tuplesB[0].index(name) for name in tuplesA[0] ] + [ len(tuplesA[0])+tuplesB[1].index(name) for name in tuplesA[1] ]
+        except ValueError:
+            raise ValueError("tensors must have exactly the same indices! {} vs. {} + {}".format(tuplesA, tuplesB, list(slice_indices)) )
+
+        slicedB = self.tensorData[B][slicedefB]
+        viewB = _np.transpose(slicedB, axes=permuter)
+
+
+        txt = ''.join([idx+str(slice_indices[idx]) for idx in slice_indices])
+        result_name = "accumulate({},{},{})".format(A,B, txt)
+        self.registeredAdditionToSlice[result_name] = (A,B,viewB, slice_indices)
+        self.update_order.append(result_name)        
+        return result_name        
+
+    def registerAddition(self, A, B, result_name=None, out_array=None, flip_underlines=False, align_result_to=None, accumulate=False):
+        """
+        register an addition operation
+        
+        accumulate: if true, add B to A (result_name, align_result_to, out_array, and flip_underlines becomes ineffective)
         """
         tuplesA = self.tensorIndices[A]
         tuplesB = self.tensorIndices[B]
         A_permuter = None
         B_permuter = None
-        if align_result_to == None:
+        if align_result_to == None or accumulate:
             align_result_to = tuplesA
 
         views = []
@@ -417,10 +459,13 @@ class TensorNameSpace(object):
             views.append(view)
 
 
-        if result_name == None:
+        if accumulate:
+            result_name = A
+            out_array = None
+        elif result_name == None:
             result_name ='({0}+{1})'.format(A,B)
 
-        if flip_underlines:
+        if flip_underlines and not accumulate:
             result_upper = tuple([self._flipTrailingUnderline(n) for n in self.tensorIndices[A][0]])
             result_lower = tuple([self._flipTrailingUnderline(n) for n in self.tensorIndices[A][1]])
         else: 
@@ -466,7 +511,7 @@ class TensorNameSpace(object):
             self.registerTensor(name, indices)
         self.registeredExternalFunctions[result_name] = (func,  in_tensor_names, out_tensor_names)
         self.update_order.append(result_name)
-
+        return result_name
 
     def registerMean(self, A, index_to_sum, *, result_name=None, out_array=None):
         """
@@ -489,7 +534,7 @@ class TensorNameSpace(object):
         self.registerTensor(result_name, (result_upper,result_lower))
         self.registeredMeanOperators[result_name] = (A, dim)
         self.update_order.append(result_name)
-
+        return result_name
 
     def registerSlice(self, A, sliced_indices_values, result_name=None):
         """
@@ -497,7 +542,10 @@ class TensorNameSpace(object):
         """
         if result_name == None:
             result_name = "slice({})".format(A)
+            if result_name in self.registeredSliceOperations:
+                raise ValueError("a slice with the same name is already registered")
         slicedef, sliced_indextuples = self.makeSliceDef(A, sliced_indices_values)
+        view = self.tensorData[A][slicedef]
         self.registerTensor(result_name, sliced_indextuples, external_array=self.tensorData[A][slicedef])
         #no need to save operand parameters for copmutation as we use views
         self.registeredSliceOperations[result_name] = (A, slicedef, sliced_indextuples)
@@ -505,19 +553,27 @@ class TensorNameSpace(object):
         return result_name
 
 
-    def registerSum(self, *args, result_name=None):
+    def registerSum(self, *args, result_name=None, sumcoordinates=False):
         """
-        sum tensors into a single tensor
+        sum multiple tensors into a single tensor
+        
+        if sumcoordinates is true, then also sum all coordinates of a tensor
         """
         if result_name == None:
             result_name = "sum({})".format(','.join( args))
 
-        tuplesReference = self.tensorIndices[args[0]] #everything is coerced into this order
-        views = [ self._alignDimensions(tuplesReference, self.tensorIndices[name],  self.tensorData[name]) for name in args ]
+        if sumcoordinates:
+            tuplesReference = ((),()) #result is a scalar
+            views = args
+        else:
+            tuplesReference = self.tensorIndices[args[0]] #everything is coerced into this order
+            views = [ self._alignDimensions(tuplesReference, self.tensorIndices[name],  self.tensorData[name]) for name in args ]
         
         self.registerTensor(result_name, tuplesReference)
-        self.registeredSumOperations[result_name] = (args, views)
+        self.registeredSumOperations[result_name] = (args, views, sumcoordinates)
         self.update_order.append(result_name)        
+        return result_name
+
 
 
     def getFlattened(self, tensorname):
@@ -557,6 +613,25 @@ class TensorNameSpace(object):
         return self.indexSizes[indexname]
 
 
+    def resetTensor(self, name):
+        """
+        Set the tensor data to its initial value pattern
+        """
+        initial_values = self.tensorInitialValues[name]
+        if initial_values == 'zeros':
+            self.setTensor(name, 0.0)
+        elif initial_values == 'identity' or 'kroneckerdelta':
+            if len(self.tensorIndices[name]) == 2:
+                upper, lower = self.tensorIndices[name]
+                for ui, li in zip(upper, lower):
+                    if self.indexSizes[ui] != self.indexSizes[li]:
+                        raise Warning("Upper/Lower Index size does not match: {} vs. {}. Setting identity is not sensible.".format(ul, li))
+            self.setTensorToIdentity(name)
+        elif initial_values == 'ones':
+            self.setTensor(name, 1.0)
+        else:
+            raise ValueError("value of initial_values argument not recognized")
+
     
     def setTensor(self, name, values, arrayIndices=None):
         """
@@ -568,7 +643,8 @@ class TensorNameSpace(object):
             return
         if arrayIndices is not None:
             values = self._alignDimensions(self.tensorIndices[name], arrayIndices, values)
-        _np.copyto(self.tensorData[name], values)
+        self.tensorData[name][...] = values
+#        _np.copyto(self.tensorData[name], values)
 
 
 #    def setTensorSlice(self, name, values, sliced_indices, value_indexTuples):
@@ -641,6 +717,8 @@ class TensorNameSpace(object):
                     slicedef.append(wildcard)  
                     indices.append(index_name)
             sliced_indextuples.append(tuple(indices))
+        if len(slicedef) == len(self.tensorData[name].shape):        
+            slicedef.append(Ellipsis)  #this trick nudges numpy into always returning a view on the value if the tensor is a scalar (zero indices), instead of returning the value itsel
         return tuple(slicedef), tuple(sliced_indextuples) 
         
 
@@ -716,8 +794,10 @@ class TensorNameSpace(object):
             B = ""  
             operation = ""
             B_permuter = ""  
-            try:     
-                if result_name in self.registeredContractions:
+            try:
+                if result_name in self.registeredResets:
+                    self.resetTensor(result_name)
+                elif result_name in self.registeredContractions:
                     operation = "contract"
                     A,B,summing_pairs, reorder_upper_lower_indices = self.registeredContractions[result_name]
                     B_permuter = summing_pairs
@@ -797,12 +877,18 @@ class TensorNameSpace(object):
 
                 elif result_name in self.registeredSumOperations:
                     operation = "sum"
-                    names, dataviews = self.registeredSumOperations[result_name]  
+                    names, dataviews, sumcoordinates = self.registeredSumOperations[result_name]  
                     Z = self.tensorData[result_name]
                     Z[...]=0.0
                     for dataview in dataviews:
-                        Z += dataview
-                    
+                        if sumcoordinates:
+                            Z += _numpy.sum(dataviews)
+                        else:                    
+                            Z += dataview
+                elif result_name in self.registeredAdditionToSlice:
+                    operation='addition_to_slice'
+                    A,B,viewB, slice_indices = registeredAdditionToSlice[result_name]
+                    self.tensorData[A] += viewB
                 else:
                     operation = "unknown"
                     raise Warning("tensor {} seems not to be computed by a registered operation".format(result_name))
