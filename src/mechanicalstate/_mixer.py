@@ -22,24 +22,25 @@ class Mixer(object):
     Implements a mixer for mechanical state distributions
     """
 
-    def __init__(self, msd_generator_array, inverseRegularization=1e-9, index_sizes={'r':2, 'g':2, 'd': 8}, max_active_inputs=5):
+    def __init__(self, tns, *, max_active_inputs=5):
         """
         
-        msd_generator_array: array of generator objects that have a getDistribution() method which returns a MechanicalStateDistribution object
+        tns: a TensorNameSpace object containing the index definitions to use:
         
-        msd_generators are queried for an expected distribution each time the getMixedDistribution() method is called
+        'r': realms index
+        'g': time derivatives index
+        'd': degrees of freedom index
         
         max_active_inputs: maximum number of generators that can be active at the same time (limits computation time)
         """
         
-        self.msd_generators = _np.asarray(msd_generator_array)
         self.active_generators_indices = []
         
         #et up our tensor namespace:
-        self.tns = _namedtensors.TensorNameSpace()
-        for name in index_sizes:
-            self.tns.registerIndex(name, index_sizes[name])
-            self.tns.registerIndex(name+'p', index_sizes[name])
+        self.tns = _namedtensors.TensorNameSpace(tns)
+        self.tns.cloneIndex('r', 'rp')
+        self.tns.cloneIndex('g', 'gp')
+        self.tns.cloneIndex('d', 'dp')
         
         self.tns.registerIndex('slots', max_active_inputs)
 
@@ -50,7 +51,7 @@ class Mixer(object):
 
         self.tns.registerTensor("preconditioner", (('rp', 'gp', 'dp'),('r', 'g','d')))
         self.tns.registerTranspose("preconditioner", flip_underlines=False)
-        self.tns.registerTensor("alpha", (('slots',),()) )
+        self.tns.registerTensor("alpha", (('slots',),()), initial_values='zeros' )
         
         self.tns.registerElementwiseMultiplication('alpha', 'alpha', result_name='alpha_sqaure')
         self.tns.registerSum('alpha', result_name='sumalpha', sumcoordinates=True)
@@ -59,7 +60,7 @@ class Mixer(object):
         self.tns.registerTensor("one", ((),()), initial_values='ones')
         self.tns.registerTensor("I", (('rp', 'gp', 'dp'),('r_', 'g_','d_')), initial_values='identity' )
 
-        self.tns.registerTensor("invCovMixed", (('r', 'g', 'd'),('r_', 'g_','d_')), initial_values='identity' )
+        self.tns.registerTensor("invCovMixed", (('r_', 'g_', 'd_'),('r', 'g','d')), initial_values='identity' )
         self.tns.registerTensor("MeanScaledSum", (('r_', 'g_', 'd_'),()), initial_values='zeros' )
         
         #setup all tensors for each distribution input slot:
@@ -84,29 +85,32 @@ class Mixer(object):
             previous = self.tns.registerInverse(previous, flip_underlines=False)  #compute precision
 
             previous = self.tns.registerScalarMultiplication(previous, alphai) #scale precision
-            invcovweighted = self.tns.registerContraction( 'preconditioner', previous) #de-precondition
+            invcovweighted = self.tns.registerContraction( 'preconditioner', previous, result_name='invCovWeighted{}'.format(slot)) #de-precondition
             invcovweightedT = self.tns.registerTranspose(invcovweighted, flip_underlines=False)
             
             #scale means by both precision and activation for computing a sum afterwards
+            previous = self.tns.registerTranspose(self.tensorNameLists['Mean'][slot])
             previous = self.tns.registerContraction(self.tensorNameLists['Mean'][slot], invcovweighted)
             meansscaled = self.tns.registerScalarMultiplication(previous, alphai)
 
-            self.tns.registerAdditionToSlice('invCovMixed',   invcovweightedT, slice_indices={})
+            self.tns.registerAdditionToSlice('invCovMixed',   invcovweighted, slice_indices={})
             self.tns.registerAdditionToSlice('MeanScaledSum', meansscaled , slice_indices={})
 
             #in order to avoid unnecessary computation, gather all equations we need to recompute up to the current slot:    
-            self._update_order_upto_slot.append(self.tns.update_order.copy() + ['CovMixed', 'MeansMixed'])
+            self._update_order_upto_slot.append(self.tns.update_order.copy() + ['CovMixed', 'MeanMixed'])
 
         #final computation on the accumulated sums:            
-        self.tns.registerInverse('invCovMixed',result_name='CovMixed')
+        self.tns.registerInverse('invCovMixed',result_name='CovMixed', flip_underlines=False)
         self.tns.registerContraction('CovMixed', 'MeanScaledSum', result_name='MeanMixed')
 
         #wrap up everything into an msd object to hand out:
-        self.mixed_msd = _mechanicalstate.MechanicalStateDistribution(self.tns, 'MeanMixed','CovMixed', precisionsName='invCovMixed')
+        self.msd_mixed = _mechanicalstate.MechanicalStateDistribution(self.tns, 'MeanMixed','CovMixed', precisionsName='invCovMixed')
 
         #_pprint(self.tns.tensorIndices)                    
 
+
     def mix(self,
+            msd_generator_array,
             activations,   #nxn matrix 
             phases,        #dxnxn matrix
             current_msd,
@@ -114,6 +118,8 @@ class Mixer(object):
         ):
         """
         compute the mixture of MSD generators by the given activation at the given generalized phase
+        
+        msd_generator_array: array of generator objects to query. (method getDistribution() will be called)
         
         activations: matrix of activations, expected shape is self.msd_generators.shape
         
@@ -125,31 +131,47 @@ class Mixer(object):
         taskspaces: A dictionary of up-to-date taskspace mappings. May be required by some of the generators
                                     
         """
+        if msd_generator_array.shape != activations.shape:
+            raise ValueError("First three arguments must be of same shape! msd_generator_array is {}, while activations is {}".format(msd_generator_array.shape,activations.shape))
+        if msd_generator_array.shape != phases.shape:
+            raise ValueError("First three arguments must be of same shape! msd_generator_array is {}, while phases is {}".format(msd_generator_array.shape,phases.shape))
     
-        activations = _np.max(0.0, activations) #ensure non-negativitiy to avoid funky behavior
+        activations = _np.maximum(0.0, activations) #ensure non-negativitiy to avoid funky behavior
         
         #determine which generators we need to query and mix:
-        active_generators_indices = np.argwhere((activations > 0.01 and self.msd_generators != None))
-        
-        if len(active_generators_indices) > self.max_active_inputs: #for now, just degrade loudly
-            warnings.warn("Mixer: more than the maximum number of generators were activated!")
-            active_generators_indices = active_generators_indices[:self.max_active_inputs]
+        generator_exists = (msd_generator_array != None)
+        generator_is_active = (activations > 0.01)
+        active_generators_indices_unsorted = _np.argwhere(_np.logical_and(generator_is_active,generator_exists))
 
+        alpha = [activations[tuple(indices)] for indices  in active_generators_indices_unsorted]
         #save a list of active generators, sorted by activation:
-        self.active_generators_indices = [indices for activation, indices in sorted(zip(mixedalphas, active_generators_indices))]
+        active_generators_indices = [tuple(indices) for activation, indices in sorted(zip(alpha, active_generators_indices_unsorted), reverse=True)]
         
+        if len(active_generators_indices) > self.tns.indexSizes['slots']: #for now, just degrade loudly
+            warnings.warn("Mixer: more generators than available mixing slots were activated!")
+            active_generators_indices = active_generators_indices[:self.tns.indexSizes['slots']] #ignore the lesser activated generators
+            alpha = alpha[:self.tns.indexSizes['slots']]
+
+        self.active_generators_indices = active_generators_indices
+        self.active_generators_indices_unsorted = active_generators_indices_unsorted
+
         #Use the precision tensor of the current msd as preconditioner:
-        self.tns.setTensor('preconditioner', current_msd.getPrecisions())
+        precision, precision_indices = current_msd.getPrecisions()
+        self.tns.setTensor('preconditioner', precision)
         
+        self.tns.resetTensor('alpha')
         #query the msd_generators:
         last_updated_generator = 0
         for slot, indices in enumerate(self.active_generators_indices):
-            msdi = self.msd_generators[indices].getDistribution(generalized_phase=phases[indices], current_msd=current_msd, task_spaces=task_spaces)
+            generatori = msd_generator_array[tuple(indices)]
+            phasei = phases[tuple(indices)]
+            msdi = generatori.getDistribution(generalized_phase=phasei, current_msd=current_msd, task_spaces=task_spaces)
             self.tns.setTensor(self.tensorNameLists['Mean'][slot], msdi.getMeansData())
             self.tns.setTensor(self.tensorNameLists['Cov'][slot], msdi.getCovariancesData())
+            self.tns.tensorData['alpha'][slot] = alpha[slot]
 
         #mix:
-        self.tns.update(self._update_order_upto_slot[len(active_generators_indices)])
+        self.tns.update(*self._update_order_upto_slot[len(self.active_generators_indices)])
 
         #the result is accessible via the msd_mixed object:    
         return self.msd_mixed
