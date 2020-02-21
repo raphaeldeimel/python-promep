@@ -19,6 +19,7 @@ import hdf5storage as _h5
 import time as _time
 import matplotlib.pyplot as _plt
 
+import ruamel.yaml as _yaml
 
 import mechanicalstate as _mechanicalstate
 
@@ -32,7 +33,7 @@ class LTIGoal(object):
     
     """
 
-    def __init__(self, tensornamespace, * , current_msd_from=None, task_space='jointspace', kp=10.0, kv=5.0, kd=0.0, desiredMean=None, name='unnamed'):
+    def __init__(self, tensornamespace, * , current_msd_from=None, task_space='jointspace', name='unnamed', **kwargs):
 
         self.name = name
         self.phaseAssociable = False #indicate that this motion generator is not parameterized by phase
@@ -138,13 +139,13 @@ class LTIGoal(object):
         self.tns.renameIndices('ExpectedCov', droptwos, inPlace=True)
         self.tns.renameIndices('ExpectedMean', droptwos, inPlace=True)
 
-
+        
         #set values, if provided:
-        self.setDesired(desiredMean=desiredMean, Kp=kp, Kv=kv)
+        self.setDesired(**kwargs)
         self.tns.update(*self.tns.update_order[:self._update_cheap_start])
 
 
-    def setDesired(self, desiredMean=None, desiredCov=None, Kp=None, Kv=None):
+    def setDesired(self, desiredMean=None, desiredCov=None, **kwargs):
         """
         set new desired means and covariances and recompute any dependent internal variables
         
@@ -157,25 +158,42 @@ class LTIGoal(object):
 
         Kv: array of shape ('d', 'd_')    (order: torque, velocity)
         """
+        known_gaintensors = ['Kp', 'Kv', 'Kd']
+        known_goaltypes = ['position','impulse','velocity','torque']
         if self.msd_current.tns is self.tns:  #local data?
             if not desiredMean is None:            
                 self.tns.setTensor('DesiredMean', desiredMean)
             if not desiredCov is None:
                 self.tns.setTensor('DesiredCov', desiredCov)
+            for name in kwargs:
+                if name in known_gaintensors:
+                    if kwargs[name] is None:
+                        continue
+                    if not name in self.tns.tensorData:
+                        continue
+                    value = _np.asarray(kwargs[name])
+                    if value.ndim==0:
+                        gains = _np.eye(self.tns.indexSizes['d']) * value
+                    elif value.ndim == 1:
+                        gains = _np.diag(value)
+                    elif value.ndim==2:
+                        gains=value
+                    else:
+                        raise ValueError()
+                    self.tns.setTensor(name, gains)
+                elif name in known_goaltypes:
+                    if name in self.commonnames2rg:
+                        rg = self.commonnames2rg[name]
+                        self.tns.tensorData['DesiredMean'][rg][:] = kwargs[name]
+                elif name in ('r', 'g', 'd'): #for simplicity of serialization/deserialization, ignore these kwargs
+                    pass 
+                else:
+                    raise ValueError("{} is not a valid argument (I known: {})".format(name, ",".join(known_goaltypes + known_gaintensors )))
         else:
             if not (desiredMean is None and desiredCov is None):
                 raise ValueError("I don't dare setting a data array I don't own.")
-            
-        for value, tensorname in ( (Kp, 'Kp'), (Kv, 'Kv')):
-            if value is None:
-                continue
-            if _np.isreal(value):
-                pass
-            elif value.ndim == 1:
-                Kp = _np.diag(Kp)
             else:
-                pass
-            self.tns.setTensor(tensorname, value)
+                pass   
         self.tns.update(*self.tns.update_order[:self._update_cheap_start])
             
 
@@ -203,56 +221,77 @@ class LTIGoal(object):
         necessary to recreate this Controller
 
         """
-        serializedDict = {}
+        serializedDict = {}        
         serializedDict[u'name'] = self.name
         serializedDict[u'r'] = self.tns.indexSizes['r']
         serializedDict[u'g'] = self.tns.indexSizes['g']
         serializedDict[u'd'] = self.tns.indexSizes['d']
         serializedDict[u'task_space'] = self.taskspace_name
-        serializedDict[u'kp'] = self.kp
-        serializedDict[u'kv'] = self.kv
-        serializedDict[u'kd'] = self.kd
+
+        data = self.msd_desired.getMeansData()
+        for name in ('position', 'velocity', 'torque', 'impulse'):
+            if name in self.commonnames2rg:
+                serializedDict[name] = data[self.commonnames2rg[name]].tolist()
+
+        for name in ('Kp', 'Kv', 'Kd'):
+            if name in self.tns.tensorData:
+                serializedDict[name] = self.tns.tensorData[name].tolist()
         
         return serializedDict
 
     @classmethod
-    def makeFromDict(cls, params):
+    def makeFromDict(cls, params, tns=None):
         """
         Create a controller from the given dictionary
         
         The controller classes possess a serialize() function to create those dictionaries
+        
+        Either the dictionary contains the index sizes (r,g,d), or you can provide a TensorNameSpace instead
         """
-        c = PDController(**params)
+        if tns==None:
+            tns = _mechanicalstate.makeTensorNameSpaceForMechanicalStateDistributions(r=params['r'],g=params['g'],d=params['d'])
+        c = LTIGoal(tns, **params)
         return c
         
 
     def saveToFile(self, forceName=None, path='./', withTimeStamp=False):
         """
-        save the (current) ProMP to the given file
+        save the LTIGoal parameters to a file
 
-        The data can be used by ProMPFactory to recreate the ProMP
-
-        Note: the current, not the initial distribution is saved
-
-        Format: Matlab 7.3 MAT file
         """
         d  = self.serialize()
         if forceName is not None:
             d[u'name']=forceName
         
         if withTimeStamp:
-            filename = '{0}_{1}.ltigoal.h5'.format(_time.strftime('%Y%m%d%H%M%S'), d[u'name'])
+            filename = '{0}_{1}.ltigoal.yaml'.format(_time.strftime('%Y%m%d%H%M%S'), d[u'name'])
         else:
-            filename = '{0}.ltigoal.h5'.format(d[u'name']) 
-        filepath= _os.path.join(path, filename)
-        _h5.write(d, filename=filepath, store_python_metadata=True)
+            filename = '{0}.ltigoal.yaml'.format(d[u'name']) 
+        filepath= _os.path.join(path, filename)   
+        with open(filepath, 'w') as f:
+            _yaml.dump(self.serialize(), stream=f)
         return filepath
+
+    @classmethod
+    def makeFromFile(cls, filepath, tns=None):
+        """
+        Create a controller from the given yaml file
+        
+        The controller classes possess a saveToFile() function to create that file
+        
+        Either the dictionary contains the index sizes (r,g,d), or you can provide a TensorNameSpace instead
+        """
+        with open(filepath, 'r') as f:
+            d = _yaml.load(f, Loader=_yaml.Loader)
+        ltigoal = cls.makeFromDict(d, tns=tns)
+        return ltigoal
+
 
         
     def __repr__(self):
         text  = "Name: {}\n".format(self.name)
         text += "r,g,d: {},{},{}\n".format(self.tns.indexSizes['r'],self.tns.indexSizes['g'], self.tns.indexSizes['d'] )
-        for name in ('Kp', 'Kv', 'Kd'):            
+        for name in ('Kp', 'Kv', 'Kd', 'DesiredMean'):            
             if name in self.tns.tensorData:
                 text += "{}:\n".format(name)
                 text += "{}\n".format(self.tns.tensorData[name])
@@ -298,15 +337,16 @@ class LTIGoal(object):
         tns_plot.registerTensor('cov_sampled', (('r','g','d'),('r_','g_','d_')))
         if distInitial is None:
             #create a useful initial dist for plotting:
-            self.tensorData['mean_initial'][self.commonnames2rg['position']][:] = 1.4
-            self.tensorData['mean_initial'][self.commonnames2rg['position']][:] = 0.0
+            tns_plot.tensorData['mean_initial'][self.commonnames2rg['position']][:] = 1.4
+            tns_plot.tensorData['mean_initial'][self.commonnames2rg['position']][:] = 0.0
         else:
-            self.setTensor('mean_initial', distInitial.means)
-            self.setTensor('cov_initial', distInitial.covariances)
+            tns_plot.setTensor('mean_initial', distInitial.means)
+            tns_plot.setTensor('cov_initial', distInitial.covariances)
         
-        a,b = 0.5*_np.min(self.tensorData['mean_initial']), 0.5*_np.max(self.tensorData['mean_initial'])
+        a,b = 0.5*_np.min(tns_plot.tensorData['mean_initial']), 0.5*_np.max(tns_plot.tensorData['mean_initial'])
         limits_tightest = {
             'torque': [-1,1],
+            'impulse': [-1,1],
             'position': [(a+b)-1*(b-a), (a+b) + 1*(b-a) ],
             'velocity': [(a+b)-1*(b-a), (a+b) + 1*(b-a) ],
         }
