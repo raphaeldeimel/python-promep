@@ -32,7 +32,7 @@ class LTIGoal(object):
     
     """
 
-    def __init__(self, tensornamespace, * , current_msd_from=None, task_space='jointspace', kp=10.0, kv=5.0, kd=0.0, desiredTensorData=None, expectedTorqueNoise=0.01 , name='unnamed'):
+    def __init__(self, tensornamespace, * , current_msd_from=None, task_space='jointspace', kp=10.0, kv=5.0, kd=0.0, desiredMean=None, name='unnamed'):
 
         self.name = name
         self.phaseAssociable = False #indicate that this motion generator is not parameterized by phase
@@ -140,7 +140,7 @@ class LTIGoal(object):
 
 
         #set values, if provided:
-        self.setDesired(desiredMean=desiredTensorData, Kp=kp, Kv=kv)
+        self.setDesired(desiredMean=desiredMean, Kp=kp, Kv=kv)
         self.tns.update(*self.tns.update_order[:self._update_cheap_start])
 
 
