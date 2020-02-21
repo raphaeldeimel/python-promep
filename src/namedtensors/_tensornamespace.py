@@ -119,6 +119,15 @@ class TensorNameSpace(object):
             self.indexValues[name2] = list(values)
         return name, name2
 
+
+    def cloneIndex(self, clonefrom, newname):
+        """
+        Create a new index with identical size and values of thegiven index
+        
+        """
+        return self.registerIndex(newname, self.indexSizes[clonefrom], self.indexValues[clonefrom])
+
+
     def registerTensor(self, name, indexTuples, external_array = None, initial_values='zeros'):
         """
         Make the manager aware of a specific tensor and the shape of its indices
