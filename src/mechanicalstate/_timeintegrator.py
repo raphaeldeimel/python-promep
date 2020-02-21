@@ -14,51 +14,150 @@ import itertools as _it
 
 import namedtensors as _nt
 
+from . import _mechanicalstate
+
 
 class TimeIntegrator(object):
 
-    def __init__(self, tensornamespace=None, noiseFloorSigmaTorque=0.01, noiseFloorSigmaPosition=0, noiseFloorSigmaVelocity=0, dynamicsModel = None):
+    def __init__(self, tensornamespace, noiseFloorSigmaTorque=0.01, noiseFloorSigmaPosition=0, noiseFloorSigmaVelocity=0, dynamicsModel = None):
         """
         
         dynamicsModel: object that provides a getInertiaMatrix(position) method to query the inertia matrix of the system to integrate
+        
+        
+        
+        
+        
+        Integrate the time using Euler integration, expressed as a matrix multiplication:
+    
+                     pos       vel            impulse      torque 
+                  |   1    dt - eta*Linv*dt²     0      dt²/2 * Linv  |   pos
+             A =  |   0    1 - eta*Linv*m*dt     0      dt    * Linv  |   vel
+                  |   0        0                 1            0       |   impulse
+                  |   0        0                 0            1       |   torque
+
+
+            or, with basis tensors:
+            
+             Linv = inertia inverse
+              A_newton =    delta^rgd_rgd                         #identity
+                       + e(pos,       vel) : (delta^d_d * dt)       #effect of constant velocity on position (integrate)
+                       + e(impulse,torque) : (delta^d_d * dt)       #effect of constant torque on impulse (integrate)
+                       + e(pos,    torque) : (     Linv * dt²/2)    #effect of constant torque on position
+                       + e(vel,    torque) : (     Linv * dt)       #effect of constant torque on position
+
+                                                                  #damping/viscuous friciton
+                       - e(pos, vel) : eta * (     Linv * dt²/2)    #change of position
+                       - e(vel, vel) : eta * (     Linv * dt)       #change of velocity
+                       
+
+
+
+                To integrate over dt:
+                Mean:           M(t+dt) = A:M(t) 
+                Covariances:    C(t+dt) = A:C(t):A^T
+
+        
         """
         
-        if tensornamespace is not None:
-            self.tns = _nt.TensorNameSpace(tensornamespace)
-        else:
-            self.tns = _nt.TensorNameSpace(tensornamespace)
-            self.tns.registerIndex('r',2, ('motion', 'effort'))
-            self.tns.registerIndex('g',2)
-            self.tns.registerIndex('d',1)
-           
-        self.tns.registerTensor('A_template', ('r_','g_''d_'),('r', 'g','d'), initial_values='identity' )
-        self.tns.registerTensor('A', ('r','g''d'),('r_', 'g_','d_') )
-        self.tns.registerTensor('noiseFloorCov', ('r_','g_''d_'),('r', 'g','d'))
+        self.tns = _nt.TensorNameSpace(tensornamespace)
+        
+        if self.tns.indexSizes['d'] > 2:
+            NotImplementedError()
+        
+        self.tns.registerTensor('LastMean', (('r','g','d'),()))
+        self.tns.registerTensor('LastCov', (('r','g','d'),('r_', 'g_','d_')))
+        self.msd_last  = _mechanicalstate.MechanicalStateDistribution(self.tns, 'LastMean', 'LastCov')
+        
+        
+        #create all the basis tensors we need:
+        rgrg= (('r_', 'g_'),('r', 'g'))
+        name2rg  = self.msd_last.commonnames2rg
+        self.tns.registerBasisTensor( 'e_pos_vel', rgrg, (name2rg['position'],name2rg['velocity']), ignoreLabels=True )
+        self.tns.registerBasisTensor( 'e_imp_tau', rgrg, (name2rg['impulse'], name2rg['torque']), ignoreLabels=True )
+        self.tns.registerBasisTensor( 'e_pos_tau', rgrg, (name2rg['position'],name2rg['torque']), ignoreLabels=True )
+        self.tns.registerBasisTensor( 'e_vel_tau', rgrg, (name2rg['velocity'],name2rg['torque']), ignoreLabels=True )
+        self.tns.registerBasisTensor( 'e_vel_vel', rgrg, (name2rg['velocity'],name2rg['velocity']), ignoreLabels=True )
+        
+        dd= (('d_',),('d',))
+        self.tns.registerTensor('delta_dd',dd, initial_values='identity') # delta^d_d 
+
+        #inputs:
+        self.tns.registerTensor('Linv',dd) # Linv
+        self.tns.registerTensor('dt',((),()) ) # dt scalar
+        self.tns.registerTensor('eta_neg',((),()) ) # damping factor (negative)
+
+        self.tns.registerTensor('noiseFloorCov', (('r_','g_','d_'),('r', 'g','d')))
         self.tns.tensorData['noiseFloorCov'][0,0,:,0,0,:] = noiseFloorSigmaPosition**2
         self.tns.tensorData['noiseFloorCov'][0,1,:,0,1,:] = noiseFloorSigmaVelocity**2
         self.tns.tensorData['noiseFloorCov'][1,0,:,1,0,:] = noiseFloorSigmaTorque**2
         #self.tns.tensorData['noiseFloorCov'][1,1,:,1,1,:] = noiseFloorSigmaTorqueRate**2
 
-        self.tns.setTensor('meansCurrent', ('r','g''d'),())
-        self.tns.setTensor('covCurrent', ('r','g''d'),('r_', 'g_','d_'))
 
-        self.tns.registerInverse('A')
-        self.tns.registerContraction('A', 'meansCurrent', result_name='meansNext')
-        self.tns.registerContraction('(A)^T', 'covCurrent')
-        self.tns.registerContraction('(A)^T:covCurrent', 'A')
+
+        #computation:
+        sum_terms_noLinv = []  #all terms that will be summed up to yield 'A'
+
+        dt_squared = self.tns.registerElementwiseMultiplication('dt','dt') 
+        dt2 = self.tns.registerScalarMultiplication(dt_squared , 0.5, result_name='dt2')  #dt²/2 scalar
+        Idt     = self.tns.registerScalarMultiplication('delta_dd','dt') # Linv*dt
+        Idt2    = self.tns.registerScalarMultiplication('delta_dd','dt2') # Linv*dt²/2
+
+        
+        sum_terms_noLinv.append(self.tns.registerContraction('e_pos_vel', Idt))
+        sum_terms_noLinv.append(self.tns.registerContraction('e_imp_tau', Idt))
+
+        self.tns.registerSum(*sum_terms_noLinv, result_name='A_noLinv')
+        
+        #from here on, Linv influences computation:
+        index_first_equation_no_dt_change = len(self.tns.update_order)
+
+        sum_terms_Linv = []  #all terms that will be summed up to yield 'A'
+
+        Linvdt2 = self.tns.registerScalarMultiplication('Linv','dt2') # Linv*dt²/2
+        sum_terms_Linv.append(self.tns.registerContraction('e_pos_tau', Linvdt2))
+
+        Linvdt  = self.tns.registerScalarMultiplication('Linv','dt') # Linv*dt
+        sum_terms_Linv.append(self.tns.registerContraction('e_vel_tau', Linvdt))
+
+        #Damping:        
+        etaLinvdt2 = self.tns.registerScalarMultiplication(Linvdt2,'eta_neg') # Linv*dt²/2
+        sum_terms_Linv.append(self.tns.registerContraction('e_pos_vel', etaLinvdt2))
+
+        etaLinvdt  = self.tns.registerScalarMultiplication(Linvdt,'eta_neg') # Linv*dt
+        sum_terms_Linv.append(self.tns.registerContraction('e_vel_vel', etaLinvdt))
+
+
+        self.tns.registerSum(*sum_terms_Linv, result_name='A_Linvonly')
+        
+        #finally, compute A:        
+        self.tns.registerAddition('A_noLinv', 'A_Linvonly', result_name='A')
+        
+
+        self.tns.registerContraction('A', 'LastMean', result_name='CurrentMean')
+        
+        index_first_equation_A_unchanged = len(self.tns.update_order)
+        
+        self.tns.registerTranspose('A')
+        previous = self.tns.registerContraction('LastCov', '(A)^T')
+        previous = self.tns.registerContraction('A', previous)
         #this is a very simple "plant model" to account for limits in execution.
         #it also avoid unrealistic convergence to zero variances        
-        self.tns.registerAddition('(A)^T:covCurrent:A', 'noiseFloorCov', result_name='covNext')  
+        currentcov_unsymmetrized = self.tns.registerAddition(previous, 'noiseFloorCov', result_name='CurrentCov_unsym')  
 
+        #to avoid accumulation of numeric errors, re-symmetrize covariances after each step:
+        previous = self.tns.registerTranspose(currentcov_unsymmetrized, flip_underlines=True)
+        previous = self.tns.registerAddition(currentcov_unsymmetrized, previous)
+        self.tns.registerScalarMultiplication(previous, 0.5, result_name = 'CurrentCov')
 
-        self.tns.registerInverse('covNext', flip_underlines=True)
-        self.tns.registerAddition('covNext','(covNext)^T')
-        self.tns.registerScalarMultiplication('(covNext+(covNext)^T)', 0.5, result_name = 'covNext_resymmetrized')
+        #associate result tensors to an msd:
+        self.msd_current  =_mechanicalstate.MechanicalStateDistribution(self.tns, 'CurrentMean', 'CurrentCov')
             
-        self.substepMaxLength = 1.0#0.0051 #0.0501 # maximum integration time step to avoid bad Euler integration. 
-        self.dt = _np.inf
-        self.dt2 = _np.inf
-        
+        #determine which equations to re-compute when only Linv changes:
+        self._equations_dt_unchanged = self.tns.update_order[index_first_equation_no_dt_change:]
+        self._equations_A_unchanged = self.tns.update_order[index_first_equation_A_unchanged:]
+
+
         
         if dynamicsModel is None:
             self.dynamicsModel = FakeDynamicsModel(self.tns.indexSizes['d'])
@@ -66,10 +165,20 @@ class TimeIntegrator(object):
         else:
             self.dynamicsModel = dynamicsModel
     
-    def integrate(self, mStateDistribution, duration):
+        
+
+    
+    def integrate(self, mStateDistribution, dt, times=1):
             """
             
-            Integrate the time using Euler integration, expressed as a matrix multiplication:
+            mStateDistribution: distribution to integrate
+            
+            dt: timestep to use for integration. Faster if kept constant
+            
+            times: How many times the time integration should pe performed
+
+
+            Old description:                           
 
                        |   1      0     0 |
                   A =  | dt^2/m   1    dt |
@@ -87,52 +196,39 @@ class TimeIntegrator(object):
 
             
             """
-            substeps = 1+int(duration/self.substepMaxLength) #make sure we don't do too large steps when integrating
-            dt_substeps = duration/substeps
-            if abs(self.dt - dt_substeps) > 1e-6: #update the elements dependent on timestep:
-                    self.dt = dt_substeps
-                    self.dt2 = 0.5*self.dt*self.dt
+            #copy the current data into the local tensors:
+            self.tns.setTensor('LastMean',  mStateDistribution.getMeansData())
+            self.tns.setTensor('LastCov',  mStateDistribution.getCovariancesData())
 
-            self.tns.setTensor('meansNext',  mStateDistribution.means)
-            self.tns.setTensor('covNext',  mStateDistribution.covariances)
-            
+            if times < 1:
+                return self.msd_current
+ 
             #get dynamics parameters:
             pos =  mStateDistribution.means[mStateDistribution.name2rg['position']]
             L = self.dynamicsModel.getInertiaMatrix()
-            eta = self.dynamicsModel.getViscuousFrictionCoefficients(mStateDistribution.means)
             Linv = _np.linalg.inv(L)
-            Linv_eta = Linv * eta[:,_np.newaxis]  # = Linv dot diag(eta)
+            eta = self.dynamicsModel.getViscuousFrictionCoefficients(mStateDistribution.means)
 
-            self.tns.tensorData['A']
-            #update mass matrix dependent elements:
-            postau = self.tns.makeSliceDef('A', {'r':0, 'g':0, 'r_': 1, 'g_': 0})
-            veltau = self.tns.makeSliceDef('A', {'r':0, 'g':1, 'r_': 1, 'g_': 0})
-            posvel = self.tns.makeSliceDef('A', {'r':0, 'g':0, 'r_': 0, 'g_': 1})
-            velvel = self.tns.makeSliceDef('A', {'r':0, 'g':1, 'r_': 0, 'g_': 1})
-            tauvel = self.tns.makeSliceDef('A', {'r':1, 'g':0, 'r_': 0, 'g_': 1})
-            self.tns.tensorData['A'][postau]  = Linv * self.dt2  #could be more elegantly formulated with a separate tensor for dt-mapping/scaling of Linv
-            self.tns.tensorData['A'][veltau]  = Linv * self.dt
-            #add inertial motion:
-            for dof in range(self.tns.indexSizes['d']):
-                self.tns.tensorData['A'][posvel] = self.dt
-            #add viscuous friction
-            self.tns.tensorData['A'][tauvel] -= Linv_eta 
-            self.tns.tensorData['A'][posvel] -= Linv_eta * self.dt2
-            self.tns.tensorData['A'][velvel] -= Linv_eta * self.dt
-            #integrate:
-            for i in range(substeps):   
-                self.setTensor('meansCurrent', self.tns.tensorData['meansNext'],self.tns.tensorIndices['meansNext'])
-                self.setTensor('covCurrent', self.tns.tensorData['covNext'],self.tns.tensorIndices['covNext'])
-                self.tns.update()
+            self.tns.setTensor('Linv', Linv)
+            self.tns.setTensor('eta_neg', -eta)
 
+            #first iteration: also check whether we need to recompute A:
+            if abs(dt - self.tns.tensorData['dt'].value) < 1e-6:
+                    self.tns.update(*self._equations_dt_unchanged)
+            else:                
+                    self.tns.setTensor('dt', dt_substeps)
+                    self.tns.update() #needs a full recomputation
+
+            #integrate for the requested number of times:
+            for i in range(times-1):   
+                self.setTensor('LastMean', self.tns.tensorData['CurrentMean'],self.tns.tensorIndices['CurrentMean'])
+                self.setTensor('LastCov', self.tns.tensorData['CurrentCov'],self.tns.tensorIndices['CurrentCov'])
+                self.tns.update(_equations_A_unchanged)
+            
             if _np.any(self.tns.tensorData['covNext'] > 1e10):
                 raise RuntimeWarning("TimeIntegrator: covariance matrix has elements > 1e10!")
-
-            #to ensure continued symmetry of the covariance matrix:
-            self.tns.tensorData['covNext'] = 0.5*(self.tns.tensorData['covNext'] + self.tns.tensorData['(covNext)^T'])
-            covNext_resymmetrized
             
-            return MechanicalStateDistribution(self.tns.tensorData['meansNext'], self.tns.tensorData['covNext_resymmetrized']) 
+            return self.msd_current
 
 
 class FakeDynamicsModel():
