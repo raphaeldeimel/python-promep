@@ -196,7 +196,7 @@ class TensorNameSpace(object):
         self.tensorIndexPositionsAll[name] = indexPositionsAll
         
 
-    def registerBasisTensor(self, basistensorname, index_name_tuples,  index_value_tuples):
+    def registerBasisTensor(self, basistensorname, index_name_tuples,  index_value_tuples, ignoreLabels=False):
         """        
         construct a orthonormal basis tensor by specifying 
         
@@ -209,11 +209,11 @@ class TensorNameSpace(object):
         coord_pos = []
         for l in range(2):
             for value, index_name in zip(index_value_tuples[l], self.tensorIndices[basistensorname][l]):
-                if self.indexValues[index_name] is None:
+                if value is None:
+                    coord_pos.append(value) #None selects everything
+                elif self.indexValues[index_name] is None or ignoreLabels:
                     coord_pos.append(value) #default to natural numbers as index
-                elif value is None:
-                    coord_pos.append(value) #None selects everything,
-                else:
+                else:  #do label-based lookup of position within data array
                     labels = self.indexValues[index_name]
                     labelpos = labels.index(value)
                     coord_pos.append(labelpos)
