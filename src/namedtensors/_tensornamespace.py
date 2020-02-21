@@ -912,10 +912,29 @@ class TensorNameSpace(object):
                         for name in result_name.split(','):
                             print("Details for {}: {}   {}".format(name, self.tensorIndices[name], self.tensorShape[name]))
                 raise e
-                            
 
-        
+    def _getPositionofIndexLabel(self,indexname, label):
+        labels = self.indexValues[indexname]
+        if labels is None:
+            if int(label) == label: #is it an integer? -> then just return it
+                return label
+            else:
+                raise ValueError("Index labels of {} are a subset of (nonnegative) Integers. {} is not an Integer.".format(indexname, label))
+        else:
+            return labels.index(label)
 
 
-
-
+    def __repr__(self):
+        text = "Indices:\n"
+        for index in self.indexSizes:
+            if not index.endswith('_'):
+                if self.indexValues[index] is None:
+                    indexValues  =  " (integers)"
+                else:
+                    indexValues = ": "+",".join(self.indexValues[index])
+                text += "{0}, {0}_: Size {1}{2}\n".format(index, self.indexSizes[index], indexValues)
+        text += "\nTensors:\n"
+        for name in self.tensorIndices:
+            text += "{}: {}  /  {}\n".format(name, " ".join(self.tensorIndices[name][0]), " ".join(self.tensorIndices[name][1]))
+        return text
+    
