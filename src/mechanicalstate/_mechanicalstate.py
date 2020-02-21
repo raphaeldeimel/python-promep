@@ -40,7 +40,7 @@ def _makeMetadataLookuptable(r_max=2, g_max=4):
             names_all = [ motion_names[:g], effort_names[shift_effort_by:shift_effort_by+g]][:r]
             
             metadata['rg_commonnames'] = names_all
-            metadata['realm_names'] = ['motion0', "effort{}".format(shift_effort_by)][:r+1]
+            metadata['realm_names'] = ['motion', "effort"]
                        
             #set up translation dict from human-readable names to indices used within the promep data structures:
             names2rg={}
@@ -91,6 +91,21 @@ _static_namelookup_table = _makeMetadataLookuptable()
 
 
 
+def makeTensorNameSpaceForMechanicalStateDistributions(r=2, g=2, d=1):
+    """
+    Create a TensorNameSpace object with suitable index definitions 
+    to support MechanicalStateDistribution objectss
+    """
+    tns = _nt.TensorNameSpace()
+    metadata = _static_namelookup_table[r][g]
+    tns.registerIndex('r', r, metadata['realm_names'])
+    tns.registerIndex('g', g)
+    tns.registerIndex('d', d)
+    return tns
+    
+    
+
+
 class MechanicalStateDistribution(object):
 
     def __init__(self, tensornamespace, meansName, covariancesName, precisionsName=None):
@@ -98,7 +113,7 @@ class MechanicalStateDistribution(object):
 
         tensornamespace: namespace the data are defined/managed in 
         
-        meansName, covariancesName: names of the tensor in the tensor namespace
+        meansName, covariancesName: nanamelookup_tablemes of the tensor in the tensor namespace
         
         precisionsName: optional tensor that holds inverses
 
@@ -126,9 +141,9 @@ class MechanicalStateDistribution(object):
     def _makeAdvancedMethodsUsable(self):
         if not self._advancedmethodsUsable:
             self._tns_local = _nt.TensorNameSpace(self.tns)
-            self._tns_local.registerIndex('g2', self._tns_local.indexSizes['g'])
-            self._tns_local.registerIndex('d2', self._tns_local.indexSizes['d'])
-            self._tns_local.registerTensor('covs', self.tns.tensorIndices[self.covariancesName],  external_array=self.tns.tensorData[self.covariancesName])
+            self._tns_local.cloneIndex('g', 'g2')
+            self._tns_local.cloneIndex('d', 'd2')
+            self._tns_local.registerTensor('covs', self.tns.tensorIndices[self.covariancesName],  external_array=self.tns.tensorData[self.covariancesName], initial_values='keep')
             self._tns_local.renameIndices('covs', {'g_':'g2', 'd_':'d2'}, inPlace=True)
             self._tns_local.registerSlice('covs', {'r':'motion', 'r_':'motion'},  result_name='motionmotion')
             self._tns_local.registerSlice('covs', {'r':'effort', 'r_':'motion'},  result_name='effortmotion')
@@ -142,16 +157,17 @@ class MechanicalStateDistribution(object):
 
             self._advancedmethodsUsable = True
         
-                
-        
-    
     def __repr__(self):
-        text  = "Realms: {}\n".format(self.shape[0])
-        text += "Dofs: {}\n".format(self.shape[1])
-        text += "Derivatives: {}\n".format(self.shape[2])
-        for g_idx in range(self.shape[2]):            
-            text += "\nDerivative {}:\n       Means:\n{}\n       Variances:\n{}\n".format(g_idx, self.means[:,:,g_idx], self.variances_view[:,:,g_idx])
+        text  = "Realms: {}\n".format(self.tns.indexSizes['r'])
+        text += "Derivatives: {}\n".format(self.tns.indexSizes['g'])
+        text += "Dofs: {}\n".format(self.tns.indexSizes['d'])
+        for g_idx in range(self.tns.indexSizes['g']):            
+            mean = self.tns.tensorData[self.meansName][:,g_idx,:]
+            var = self.tns.tensorDataDiagonal[self.covariancesName][:,g_idx,:]
+            text += "\nDerivative {}:\n       Means:\n{}\n       Variances:\n{}\n".format(g_idx, mean, var)
         return text
+    
+
         
     def extractTorqueControlGains(self):
         """
@@ -175,7 +191,6 @@ class MechanicalStateDistribution(object):
             self._makeAdvancedMethodsUsable()        
             self._tns_local.update(*self._precisionequations)
             return self._tns_local.tensorData['precision'], self._tns_local.tensorIndices['precision']
-        return self.precisions
         
 
     def getMeansData(self):
