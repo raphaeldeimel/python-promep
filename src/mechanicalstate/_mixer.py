@@ -66,7 +66,7 @@ class Mixer(object):
         #setup all tensors for each distribution input slot:
         self.tns.registerReset('invCovMixed')
         self.tns.registerReset('MeanScaledSum')
-        self._update_order_upto_slot = []
+        self._update_order_upto_slot = [[]]
         for slot in range(max_active_inputs):
             self.tns.registerTensor(self.tensorNameLists['Mean'][slot], (('r', 'g', 'd'),()) )
             self.tns.registerTensor(self.tensorNameLists['Cov'][slot], (('r', 'g', 'd'),('r_', 'g_','d_')) )
@@ -151,6 +151,9 @@ class Mixer(object):
             warnings.warn("Mixer: more generators than available mixing slots were activated!")
             active_generators_indices = active_generators_indices[:self.tns.indexSizes['slots']] #ignore the lesser activated generators
             alpha = alpha[:self.tns.indexSizes['slots']]
+
+        if len(active_generators_indices) == 0: #nothing is active! raise error to avoid safety issues
+            raise ValueError("Mixer warning: no generator is active!")
 
         self.active_generators_indices = active_generators_indices
         self.active_generators_indices_unsorted = active_generators_indices_unsorted
