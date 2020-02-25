@@ -32,7 +32,7 @@ class JointSpaceToJointSpaceTransform(object):
         self.tns.registerTensor('Jinv', (('d',),('dtilde',)))
         self.tns.registerBasisTensor('e_motion_motion', (('r',),('rtilde',)), (('motion',), ('motion',)) )
         self.tns.registerContraction('e_motion_motion', 'Jinv')
-        if not 'effort' in self.tns.indexValues['r']: #this is in case we emulate ProMPs which don't model the effort domain at all
+        if not 'effort' in self.tns['r'].values: #this is in case we emulate ProMPs which don't model the effort domain at all
             self.tns.registerTensor('e_effort_effort:Jt', (('r', 'd'),('rtilde', 'dtilde'))) #placeholde tensor with only zeros in it
         else: 
             self.tns.registerBasisTensor('e_effort_effort', (('r',),('rtilde',)), (('effort',), ('effort',)) )
@@ -65,9 +65,9 @@ class JointSpaceToJointSpaceTransform(object):
         T = out_tensor_names[0]
         Xref = out_tensor_names[1]
         # for other mappings: set Xref, Jt and Jinv here
-        self.tns.setTensor('Yref', out_tns.tensorData[Yref]) #for joint to joint space, simply copy the reference point
+        self.tns.setTensor('Yref', out_tns[Yref]) #for joint to joint space, simply copy the reference point
         self.tns.update() #recomputes T
-        out_tns.setTensor(T, self.tns.tensorData['T']) #copy T into namespace of callee
-        out_tns.setTensor(Xref, self.tns.tensorData['Xref']) #copy O = T:Xref into namespace of callee
+        out_tns.setTensor(T, self.tns['T']) #copy T into namespace of callee
+        out_tns.setTensor(Xref, self.tns['Xref']) #copy O = T:Xref into namespace of callee
 
 

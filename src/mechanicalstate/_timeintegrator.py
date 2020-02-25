@@ -19,7 +19,7 @@ from . import _mechanicalstate
 
 class TimeIntegrator(object):
 
-    def __init__(self, tensornamespace, noiseFloorSigmaTorque=0.01, noiseFloorSigmaPosition=0, noiseFloorSigmaVelocity=0, dynamicsModel = None):
+    def __init__(self, tensornamespace, noiseFloorSigmaTorque=0.1, noiseFloorSigmaPosition=0, noiseFloorSigmaVelocity=0, dynamicsModel = None):
         """
         
         dynamicsModel: object that provides a getInertiaMatrix(position) method to query the inertia matrix of the system to integrate
@@ -62,16 +62,24 @@ class TimeIntegrator(object):
         
         self.tns = _nt.TensorNameSpace(tensornamespace)
         
-        if self.tns.indexSizes['d'] > 2:
+        if self.tns['d'].size > 2:
             NotImplementedError()
+        
+        #make indices signifying data from the last timestep:
+        self.tns.cloneIndex('r', 'rl')
+        self.tns.cloneIndex('g', 'gl')
+        self.tns.cloneIndex('d', 'dl')
         
         self.tns.registerTensor('LastMean', (('r','g','d'),()))
         self.tns.registerTensor('LastCov', (('r','g','d'),('r_', 'g_','d_')))
         self.msd_last  = _mechanicalstate.MechanicalStateDistribution(self.tns, 'LastMean', 'LastCov')
         
+        #in order to distinguish last and current vector spaces, we need to rename the inputs:
+        self.tns.renameIndices('LastMean', {'r':'rl', 'g':'gl', 'd':'dl', 'r_':'rl_', 'g_':'gl_', 'd_':'dl_', })
+        self.tns.renameIndices('LastCov', {'r':'rl', 'g':'gl', 'd':'dl', 'r_':'rl_', 'g_':'gl_', 'd_':'dl_', })
         
         #create all the basis tensors we need:
-        rgrg= (('r_', 'g_'),('r', 'g'))
+        rgrg= (('r', 'g'),('rl', 'gl'))
         name2rg  = self.msd_last.commonnames2rg
         self.tns.registerBasisTensor( 'e_pos_vel', rgrg, (name2rg['position'],name2rg['velocity']), ignoreLabels=True )
         self.tns.registerBasisTensor( 'e_imp_tau', rgrg, (name2rg['impulse'], name2rg['torque']), ignoreLabels=True )
@@ -79,24 +87,26 @@ class TimeIntegrator(object):
         self.tns.registerBasisTensor( 'e_vel_tau', rgrg, (name2rg['velocity'],name2rg['torque']), ignoreLabels=True )
         self.tns.registerBasisTensor( 'e_vel_vel', rgrg, (name2rg['velocity'],name2rg['velocity']), ignoreLabels=True )
         
-        dd= (('d_',),('d',))
+        dd= (('d',),('dl',))
         self.tns.registerTensor('delta_dd',dd, initial_values='identity') # delta^d_d 
 
         #inputs:
-        self.tns.registerTensor('Linv',dd) # Linv
+        self.tns.registerTensor('Linv',dd, initial_values='identity') # Linv
         self.tns.registerTensor('dt',((),()) ) # dt scalar
-        self.tns.registerTensor('eta_neg',((),()) ) # damping factor (negative)
+        self.tns.cloneIndex('d', 'de')
+        self.tns.registerTensor('eta_neg',(('dl',),('de',))) # damping factor (negative)
 
-        self.tns.registerTensor('noiseFloorCov', (('r_','g_','d_'),('r', 'g','d')))
-        self.tns.tensorData['noiseFloorCov'][0,0,:,0,0,:] = noiseFloorSigmaPosition**2
-        self.tns.tensorData['noiseFloorCov'][0,1,:,0,1,:] = noiseFloorSigmaVelocity**2
-        self.tns.tensorData['noiseFloorCov'][1,0,:,1,0,:] = noiseFloorSigmaTorque**2
-        #self.tns.tensorData['noiseFloorCov'][1,1,:,1,1,:] = noiseFloorSigmaTorqueRate**2
+        self.tns.registerTensor('noiseFloorCov', (('r','g','d'),('r_', 'g_','d_')))
+        self.tns['noiseFloorCov'].data[0,0,:,0,0,:] = noiseFloorSigmaPosition**2
+        self.tns['noiseFloorCov'].data[0,1,:,0,1,:] = noiseFloorSigmaVelocity**2
+        self.tns['noiseFloorCov'].data[1,0,:,1,0,:] = noiseFloorSigmaTorque**2
+        #self.tns['noiseFloorCov'].data[1,1,:,1,1,:] = noiseFloorSigmaTorqueRate**2
 
+        self.tns.registerTensor('I', (('r','g','d'),('rl', 'gl','dl')), initial_values='identity') # delta^d_d 
 
 
         #computation:
-        sum_terms_noLinv = []  #all terms that will be summed up to yield 'A'
+        sum_terms_noLinv = ['I']  #all terms that will be summed up to yield 'A'
 
         dt_squared = self.tns.registerElementwiseMultiplication('dt','dt') 
         dt2 = self.tns.registerScalarMultiplication(dt_squared , 0.5, result_name='dt2')  #dt²/2 scalar
@@ -121,25 +131,25 @@ class TimeIntegrator(object):
         sum_terms_Linv.append(self.tns.registerContraction('e_vel_tau', Linvdt))
 
         #Damping:        
-        etaLinvdt2 = self.tns.registerScalarMultiplication(Linvdt2,'eta_neg') # Linv*dt²/2
+        etaLinvdt2 = self.tns.registerContraction(Linvdt2,'eta_neg') # Linv*dt²/2
+        self.tns.renameIndices(etaLinvdt2, {'de': 'dl'}, inPlace=True)
         sum_terms_Linv.append(self.tns.registerContraction('e_pos_vel', etaLinvdt2))
 
-        etaLinvdt  = self.tns.registerScalarMultiplication(Linvdt,'eta_neg') # Linv*dt
+        etaLinvdt  = self.tns.registerContraction(Linvdt,'eta_neg') # Linv*dt
+        self.tns.renameIndices(etaLinvdt, {'de': 'dl'}, inPlace=True)
         sum_terms_Linv.append(self.tns.registerContraction('e_vel_vel', etaLinvdt))
-
 
         self.tns.registerSum(*sum_terms_Linv, result_name='A_Linvonly')
         
         #finally, compute A:        
         self.tns.registerAddition('A_noLinv', 'A_Linvonly', result_name='A')
         
-
-        self.tns.registerContraction('A', 'LastMean', result_name='CurrentMean')
-        
         index_first_equation_A_unchanged = len(self.tns.update_order)
-        
+
+        self.tns.registerContraction('A', 'renamed(LastMean)', result_name='CurrentMean')
+               
         self.tns.registerTranspose('A')
-        previous = self.tns.registerContraction('LastCov', '(A)^T')
+        previous = self.tns.registerContraction('renamed(LastCov)', '(A)^T')
         previous = self.tns.registerContraction('A', previous)
         #this is a very simple "plant model" to account for limits in execution.
         #it also avoid unrealistic convergence to zero variances        
@@ -152,21 +162,23 @@ class TimeIntegrator(object):
 
         #associate result tensors to an msd:
         self.msd_current  =_mechanicalstate.MechanicalStateDistribution(self.tns, 'CurrentMean', 'CurrentCov')
-            
+
         #determine which equations to re-compute when only Linv changes:
         self._equations_dt_unchanged = self.tns.update_order[index_first_equation_no_dt_change:]
         self._equations_A_unchanged = self.tns.update_order[index_first_equation_A_unchanged:]
 
-
-        
+       
         if dynamicsModel is None:
-            self.dynamicsModel = FakeDynamicsModel(self.tns.indexSizes['d'])
+            self.dynamicsModel = FakeDynamicsModel(self.tns['d'].size)
             print("TimeIntegrator: Using fake mass matrix for time integration.")
         else:
             self.dynamicsModel = dynamicsModel
     
-        
-
+        self.views_motion = []
+        for g_idx in range(self.tns['gl'].size):
+            view, indices  = self.tns.makeTensorSliceView('LastMean', {'rl': 'motion', 'gl':g_idx})
+            self.views_motion.append(view)
+        self.views_motion  = tuple(self.views_motion)
     
     def integrate(self, mStateDistribution, dt, times=1):
             """
@@ -203,30 +215,30 @@ class TimeIntegrator(object):
             if times < 1:
                 return self.msd_current
  
-            #get dynamics parameters:
-            pos =  mStateDistribution.means[mStateDistribution.name2rg['position']]
-            L = self.dynamicsModel.getInertiaMatrix()
-            Linv = _np.linalg.inv(L)
-            eta = self.dynamicsModel.getViscuousFrictionCoefficients(mStateDistribution.means)
+            #get dynamics parameters: 
+            self.dynamicsModel.update(*self.views_motion) #give the model the newest data            
+            #then, query the dynamics parameters:
+            Linv = self.dynamicsModel.getInertiaMatrixInverse()
+            eta = self.dynamicsModel.getViscuousFrictionCoefficients()
 
             self.tns.setTensor('Linv', Linv)
-            self.tns.setTensor('eta_neg', -eta)
+            self.tns['eta_neg'].data_diagonal[:] = -eta
 
-            #first iteration: also check whether we need to recompute A:
-            if abs(dt - self.tns.tensorData['dt'].value) < 1e-6:
-                    self.tns.update(*self._equations_dt_unchanged)
-            else:                
-                    self.tns.setTensor('dt', dt_substeps)
-                    self.tns.update() #needs a full recomputation
+            #before the first iteration: also check whether we need to recompute A:
+            if abs(dt - self.tns['dt'].data) > 1e-6: #needs a full recomputation
+                self.tns.setTensor('dt', dt)
+                self.tns.update() 
+            else: #save some computation time:
+                self.tns.update(*self._equations_dt_unchanged)
 
             #integrate for the requested number of times:
-            for i in range(times-1):   
-                self.setTensor('LastMean', self.tns.tensorData['CurrentMean'],self.tns.tensorIndices['CurrentMean'])
-                self.setTensor('LastCov', self.tns.tensorData['CurrentCov'],self.tns.tensorIndices['CurrentCov'])
-                self.tns.update(_equations_A_unchanged)
+            for i in range(times-1):
+                self.tns.setTensor('LastMean', self.tns['CurrentMean'].data)
+                self.tns.setTensor('LastCov', self.tns['CurrentCov'].data)
+                self.tns.update(self._equations_A_unchanged)
             
-            if _np.any(self.tns.tensorData['covNext'] > 1e10):
-                raise RuntimeWarning("TimeIntegrator: covariance matrix has elements > 1e10!")
+            if _np.any(self.tns['CurrentCov'].data > 1e10):
+                raise RuntimeWarning("TimeIntegrator: covariance matrix exploded: It has elements > 1e10!")
             
             return self.msd_current
 
@@ -241,10 +253,16 @@ class FakeDynamicsModel():
         self.L = _np.eye(dofs)
         self.viscuousFriction = _np.ones((dofs))
         
-    def getInertiaMatrix(self, position):
+    def update(self, position, velocity=None, acceleration=None):
+        self.position = position
+    
+    def getInertiaMatrix(self):
         return self.L
 
-    def getViscuousFrictionCoefficients(self, jointState=None):
+    def getInertiaMatrixInverse(self):
+        return self.L
+
+    def getViscuousFrictionCoefficients(self):
         return self.viscuousFriction
     
 

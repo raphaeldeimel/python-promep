@@ -129,12 +129,15 @@ class MechanicalStateDistribution(object):
         self.meansName = meansName
         self.covariancesName = covariancesName
         self.precisionsName = precisionsName
-        metadata = _static_namelookup_table[self.tns.indexSizes['r']][self.tns.indexSizes['g']]
+        metadata = _static_namelookup_table[self.tns['r'].size][self.tns['g'].size]
         self.commonnames2rg = metadata['commonnames2rg']
         self.rg_commonnames = metadata['rg_commonnames']        
         self.realm_names = metadata['realm_names']
         self.indexNames = metadata['indexNames']
         self.indexNames_transposed = metadata['indexNames_transposed']      
+        
+        self.means = self.tns[self.meansName]
+        self.covariances = self.tns[self.covariancesName]
         
         self._advancedmethodsUsable=False
 
@@ -143,7 +146,7 @@ class MechanicalStateDistribution(object):
             self._tns_local = _nt.TensorNameSpace(self.tns)
             self._tns_local.cloneIndex('g', 'g2')
             self._tns_local.cloneIndex('d', 'd2')
-            self._tns_local.registerTensor('covs', self.tns.tensorIndices[self.covariancesName],  external_array=self.tns.tensorData[self.covariancesName], initial_values='keep')
+            self._tns_local.registerTensor('covs', self.tns[self.covariancesName].index_tuples,  external_array=self.tns[self.covariancesName].data, initial_values='keep')
             self._tns_local.renameIndices('covs', {'g_':'g2', 'd_':'d2'}, inPlace=True)
             self._tns_local.registerSlice('covs', {'r':'motion', 'r_':'motion'},  result_name='motionmotion')
             self._tns_local.registerSlice('covs', {'r':'effort', 'r_':'motion'},  result_name='effortmotion')
@@ -158,12 +161,12 @@ class MechanicalStateDistribution(object):
             self._advancedmethodsUsable = True
         
     def __repr__(self):
-        text  = "Realms: {}\n".format(self.tns.indexSizes['r'])
-        text += "Derivatives: {}\n".format(self.tns.indexSizes['g'])
-        text += "Dofs: {}\n".format(self.tns.indexSizes['d'])
-        for g_idx in range(self.tns.indexSizes['g']):            
-            mean = self.tns.tensorData[self.meansName][:,g_idx,:]
-            var = self.tns.tensorDataDiagonal[self.covariancesName][:,g_idx,:]
+        text  = "Realms: {}\n".format(self.tns['r'].size)
+        text += "Derivatives: {}\n".format(self.tns['g'].size)
+        text += "Dofs: {}\n".format(self.tns['d'].size)
+        for g_idx in range(self.tns['g'].size):            
+            mean = self.tns[self.meansName].data[:,g_idx,:]
+            var = self.tns[self.covariancesName].data_diagonal[:,g_idx,:]
             text += "\nDerivative {}:\n       Means:\n{}\n       Variances:\n{}\n".format(g_idx, mean, var)
         return text
     
@@ -178,7 +181,7 @@ class MechanicalStateDistribution(object):
         #not very efficient to construct this every time, but it is convenient:
         self._makeAdvancedMethodsUsable()
         self._tns_local.update(*self._gainsequations)
-        return self._tns_local.tensorData['gains']
+        return self._tns_local['gains'].data
 
 
     def getPrecisions(self):
@@ -186,30 +189,30 @@ class MechanicalStateDistribution(object):
         Interface to get a precision tensor even if it was not yet computed
         """                
         if self.precisionsName != None:
-            return self.tns.tensorData[self.precisionsName], self.tns.tensorIndices[self.precisionsName]
+            return self.tns[self.precisionsName].data, self.tns[self.precisionsName].index_tuples
         else:
             self._makeAdvancedMethodsUsable()        
             self._tns_local.update(*self._precisionequations)
-            return self._tns_local.tensorData['precision'], self._tns_local.tensorIndices['precision']
+            return self._tns_local['precision'].data, self._tns_local['precision'].index_tuples
         
 
     def getMeansData(self):
         """
         return the means in a canonical form ( indicces in r,g,d order)
         """
-        return self.tns._alignDimensions( (('r','g','d'), ()),self.tns.tensorIndices[self.meansName],   self.tns.tensorData[self.meansName]) 
+        return self.tns._alignDimensions( (('r','g','d'), ()),self.tns[self.meansName].index_tuples,   self.tns[self.meansName].data) 
 
     def getCovariancesData(self):
         """
         return the covariances in a canonical form ( indicces in r,g,d order)
         """
-        return self.tns._alignDimensions( (('r','g','d'), ('r_','g_','d_')),self.tns.tensorIndices[self.covariancesName],   self.tns.tensorData[self.covariancesName]) 
+        return self.tns._alignDimensions( (('r','g','d'), ('r_','g_','d_')),self.tns[self.covariancesName].index_tuples,   self.tns[self.covariancesName].data) 
 
     def getVariancesData(self):
         """
         return the covariances in a canonical form ( indicces in r,g,d order)
         """
-        return self.tns._alignDimensions( (('r','g','d'), ()), (self.tns.tensorIndices[self.covariancesName][0],()),   self.tns.tensorDataDiagonal[self.covariancesName]) 
+        return self.tns._alignDimensions( (('r','g','d'), ()), (self.tns[self.covariancesName].indices_upper,()),   self.tns[self.covariancesName].data_diagonal) 
 
 
     def plotCorrelations(self):
@@ -221,17 +224,17 @@ class MechanicalStateDistribution(object):
             '': verbatim covariance matrix
             ''rg': variances between realms and between derivatives are normalized (default)
         """
-        cov = self.tns.tensorData[self.covariancesName]
-        sigmas = _np.sqrt(self.tns.tensorDataDiagonal[self.covariancesName])
+        cov = self.tns[self.covariancesName].data
+        sigmas = _np.sqrt(self.tns[self.covariancesName].data_diagonal)
         title="Correlations"
 
         sigmamax_inv = 1.0 / _np.clip(sigmas, 1e-6, _np.inf)        
         cov_scaled = sigmamax_inv[:,:,:,None,None,None] * cov * sigmamax_inv[None,None,None,:,:,:] 
         vmax=_np.max(cov_scaled)
 
-        len_r = self.tns.indexSizes['r']
-        len_d = self.tns.indexSizes['d']
-        len_g = self.tns.indexSizes['g']
+        len_r = self.tns['r'].size
+        len_d = self.tns['d'].size
+        len_g = self.tns['g'].size
         len_all = len_r * len_g * len_d
 
         cov_reordered =_np.transpose(cov_scaled, axes=(0,1,2, 0+3,1+3,2+3)) #to srgd

@@ -33,23 +33,23 @@ class Limiter():
     
     def setLimits(self, positionlimits, velocitylimits, torquelimits):
     
-        self.tensorData['limits_pos'][0,0,:] = positionlimits[0,:]
-        self.tensorData['limits_neg'][0,0,:] = positionlimits[1,:]
+        self['limits_pos'].data[0,0,:] = positionlimits[0,:]
+        self['limits_neg'].data[0,0,:] = positionlimits[1,:]
 
-        self.tensorData['limits_pos'][0,1,:] = velocitylimits[0,:]
-        self.tensorData['limits_neg'][0,1,:] = velocitylimits[1,:]
+        self['limits_pos'].data[0,1,:] = velocitylimits[0,:]
+        self['limits_neg'].data[0,1,:] = velocitylimits[1,:]
 
-        self.tensorData['limits_pos'][1,0,:] = torquelimits[0,:]
-        self.tensorData['limits_neg'][1,0,:] = torquelimits[1,:]
+        self['limits_pos'].data[1,0,:] = torquelimits[0,:]
+        self['limits_neg'].data[1,0,:] = torquelimits[1,:]
 
     
 
     def limit(self, distribution):
         
         #first, limit all means to the interval limits minus the minimal variance:
-        limits_neg = self.tensorData['limits_neg']
-        limits_pos = self.tensorData['limits_pos']
-        means_clipped = _np.clip(distribution.means, self.limits_neg+self.tns.tensorData['minimalStdDev'], self.limits_pos-self.tns.tensorData['minimalStdDev'])
+        limits_neg = self['limits_neg'].data
+        limits_pos = self['limits_pos'].data
+        means_clipped = _np.clip(distribution.means, self.limits_neg+self.tns['minimalStdDev'].data, self.limits_pos-self.tns['minimalStdDev'].data)
 
         # compute maximum stddev w.r.t. distances to limits
         stddevs_max_neg = (means_clipped - self.limits_neg) * self.confidenceFactor

@@ -42,36 +42,34 @@ class LTIGoal(object):
         
         if not tensornamespace is None:
             self.tns = _nt.TensorNameSpace(tensornamespace) #inherit index sizes
-            if self.tns.indexSizes['r'] < 2:
+            if self.tns['r'].size < 2:
                 raise NotImplementedError() #sorry, this "trivial" functionality is not implemented. Try using a simple, fixed msd instead
         else:
-            self.tns = _nt.TensorNameSpace()
-            self.tns.registerIndex('r',2)
-            self.tns.registerIndex('g',2)
-            self.tns.registerIndex('d',1)
+            self.tns = _mechanicalstate.makeTensorNameSpaceForMechanicalStateDistributions(r=2, g=2, d=1)
 
-        self.tns.registerIndex('r2',self.tns.indexSizes['r'], self.tns.indexValues['r'])
-        self.tns.registerIndex('g2',self.tns.indexSizes['g'])
-        self.tns.registerIndex('d2',self.tns.indexSizes['d'],)
+        self.tns.cloneIndex('r', 'r2')
+        self.tns.cloneIndex('g', 'g2')
+        self.tns.cloneIndex('d', 'd2')
 
             
+        #desired values:
+        self.tns.registerTensor('DesiredMean', (('r','g','d'),()) )
+        self.tns.registerTensor('DesiredCov', (('r','g','d'),('r_', 'g_', 'd_')) )
         self.msd_desired = _mechanicalstate.MechanicalStateDistribution(self.tns, "DesiredMean", "DesiredCov")
-        self.msd_expected = _mechanicalstate.MechanicalStateDistribution(self.tns, "ExpectedMean", "ExpectedCov")
-        self.commonnames2rg = self.msd_desired.commonnames2rg
+        
+
+        self.commonnames2rg = self.msd_desired.commonnames2rg #we use them a lot here, so remember a shorthand
 
         if current_msd_from is None: #local copy
             self.tns.registerTensor('CurrentMean', (('r','g','d'),()) )
             self.tns.registerTensor('CurrentCov', (('r','g','d'),('r_', 'g_', 'd_')) )
             self.msd_current = _mechanicalstate.MechanicalStateDistribution(self.tns, "CurrentMean", "CurrentCov")
         else:   #use data from somewhere else:
-            self.tns.registerTensor('CurrentMean', current_msd_from.tns.tensorIndices[current_msd_from.meansName] , external_array=current_msd_from.tns.tensorData[current_msd_from.meansName], initial_values='keep' )
-            self.tns.registerTensor('CurrentCov', current_msd_from.tns.tensorIndices[current_msd_from.covariancesName] , external_array=current_msd_from.tns.tensorData[current_msd_from.covariancesName], initial_values='keep')
+            self.tns.registerTensor('CurrentMean', current_msd_from.tns[current_msd_from.meansName].index_tuples , external_array=current_msd_from.tns[current_msd_from.meansName].data, initial_values='keep' )
+            self.tns.registerTensor('CurrentCov', current_msd_from.tns[current_msd_from.covariancesName].index_tuples , external_array=current_msd_from.tns[current_msd_from.covariancesName].data, initial_values='keep')
             self.msd_current = current_msd_from
 
 
-        #desired values:
-        self.tns.registerTensor('DesiredMean', (('r','g','d'),()) )
-        self.tns.registerTensor('DesiredCov', (('r','g','d'),('r_', 'g_', 'd_')) )
 
 
         r_torque, g_torque = self.commonnames2rg['torque']
@@ -95,7 +93,7 @@ class LTIGoal(object):
         else:
             self.tns.registerAddition(slice_tau, slice_kp, result_name='U') 
 
-        self.tns.registerTensor('I', self.tns.tensorIndices['U'], initial_values='identity')
+        self.tns.registerTensor('I', self.tns['U'].index_tuples, initial_values='identity')
 
         if 'velocity' in self.commonnames2rg:  #can we add damping terms? (kd)
             #Compute the K tensor: 
@@ -110,8 +108,6 @@ class LTIGoal(object):
         self.tns.registerTranspose('U')
         self.tns.registerTranspose('K')
 
-        
-        self.tns.registerTensor('noise', (('r','d','d'),('r_','g_','d_')) )
 
         
         #influence of desired mean on expected mean:
@@ -139,7 +135,9 @@ class LTIGoal(object):
         self.tns.renameIndices('ExpectedCov', droptwos, inPlace=True)
         self.tns.renameIndices('ExpectedMean', droptwos, inPlace=True)
 
-        
+        #package the result:
+        self.msd_expected = _mechanicalstate.MechanicalStateDistribution(self.tns, "ExpectedMean", "ExpectedCov")
+                
         #set values, if provided:
         self.setDesired(**kwargs)
         self.tns.update(*self.tns.update_order[:self._update_cheap_start])
@@ -169,11 +167,11 @@ class LTIGoal(object):
                 if name in known_gaintensors:
                     if kwargs[name] is None:
                         continue
-                    if not name in self.tns.tensorData:
+                    if not name in self.tns.tensor_names:
                         continue
                     value = _np.asarray(kwargs[name])
                     if value.ndim==0:
-                        gains = _np.eye(self.tns.indexSizes['d']) * value
+                        gains = _np.eye(self.tns['d'].size) * value
                     elif value.ndim == 1:
                         gains = _np.diag(value)
                     elif value.ndim==2:
@@ -184,11 +182,11 @@ class LTIGoal(object):
                 elif name in known_goaltypes:
                     if name in self.commonnames2rg:
                         rg = self.commonnames2rg[name]
-                        self.tns.tensorData['DesiredMean'][rg][:] = kwargs[name]
+                        self.tns['DesiredMean'].data[rg][:] = kwargs[name]
                 elif name in ('r', 'g', 'd'): #for simplicity of serialization/deserialization, ignore these kwargs
                     pass 
                 else:
-                    raise ValueError("{} is not a valid argument (I known: {})".format(name, ",".join(known_goaltypes + known_gaintensors )))
+                    raise ValueError("'{}' is not a valid argument (I know: {})".format(name, ", ".join(known_goaltypes + known_gaintensors )))
         else:
             if not (desiredMean is None and desiredCov is None):
                 raise ValueError("I don't dare setting a data array I don't own.")
@@ -198,15 +196,15 @@ class LTIGoal(object):
             
 
 
-    def getDistribution(self, *, current_msd=None, task_spaces=None, **kwargs):
+    def getDistribution(self, *, msd_current=None, task_spaces=None, **kwargs):
         """
             return an expected mechanicalstate distribution 
             constructed from the current msd and the lti goals
         
         """
-        if not current_msd is None:
-            self.tns.setTensor('CurrentMean', current_msd.getMeansData())
-            self.tns.setTensor('CurrentCov', current_msd.getCovariancesData())
+        if not msd_current is None:
+            self.tns.setTensor('CurrentMean', msd_current.getMeansData())
+            self.tns.setTensor('CurrentCov', msd_current.getCovariancesData())
 
         self.tns.update(*self.tns.update_order[self._update_cheap_start:])
         
@@ -223,9 +221,9 @@ class LTIGoal(object):
         """
         serializedDict = {}        
         serializedDict[u'name'] = self.name
-        serializedDict[u'r'] = self.tns.indexSizes['r']
-        serializedDict[u'g'] = self.tns.indexSizes['g']
-        serializedDict[u'd'] = self.tns.indexSizes['d']
+        serializedDict[u'r'] = self.tns['r'].size
+        serializedDict[u'g'] = self.tns['g'].size
+        serializedDict[u'd'] = self.tns['d'].size
         serializedDict[u'task_space'] = self.taskspace_name
 
         data = self.msd_desired.getMeansData()
@@ -234,8 +232,8 @@ class LTIGoal(object):
                 serializedDict[name] = data[self.commonnames2rg[name]].tolist()
 
         for name in ('Kp', 'Kv', 'Kd'):
-            if name in self.tns.tensorData:
-                serializedDict[name] = self.tns.tensorData[name].tolist()
+            if name in self.tns.tensor_names:
+                serializedDict[name] = self.tns[name].data.tolist()
         
         return serializedDict
 
@@ -290,11 +288,11 @@ class LTIGoal(object):
         
     def __repr__(self):
         text  = "Name: {}\n".format(self.name)
-        text += "r,g,d: {},{},{}\n".format(self.tns.indexSizes['r'],self.tns.indexSizes['g'], self.tns.indexSizes['d'] )
+        text += "r,g,d: {},{},{}\n".format(self.tns['r'].size,self.tns['g'].size, self.tns['d'].size )
         for name in ('Kp', 'Kv', 'Kd', 'DesiredMean'):            
-            if name in self.tns.tensorData:
+            if name in self.tns.tensor_names:
                 text += "{}:\n".format(name)
-                text += "{}\n".format(self.tns.tensorData[name])
+                text += "{}\n".format(self.tns[name].data)
         return text
     
     
@@ -337,13 +335,13 @@ class LTIGoal(object):
         tns_plot.registerTensor('cov_sampled', (('r','g','d'),('r_','g_','d_')))
         if distInitial is None:
             #create a useful initial dist for plotting:
-            tns_plot.tensorData['mean_initial'][self.commonnames2rg['position']][:] = 1.4
-            tns_plot.tensorData['mean_initial'][self.commonnames2rg['position']][:] = 0.0
+            tns_plot['mean_initial'].data[self.commonnames2rg['position']][:] = 1.4
+            tns_plot['mean_initial'].data[self.commonnames2rg['position']][:] = 0.0
         else:
             tns_plot.setTensor('mean_initial', distInitial.means)
             tns_plot.setTensor('cov_initial', distInitial.covariances)
         
-        a,b = 0.5*_np.min(tns_plot.tensorData['mean_initial']), 0.5*_np.max(tns_plot.tensorData['mean_initial'])
+        a,b = 0.5*_np.min(tns_plot['mean_initial'].data), 0.5*_np.max(tns_plot['mean_initial'].data)
         limits_tightest = {
             'torque': [-1,1],
             'impulse': [-1,1],
@@ -355,14 +353,14 @@ class LTIGoal(object):
             limits[limitname] = limits_tightest[limitname]
 
         if dofs_to_plot=='all':
-            dofs_to_plot=list(range(self.tns.indexSizes['d']))
+            dofs_to_plot=list(range(self.tns['d'].size))
 
         mStateNames = list(self.tns.commonnames2rg)
         mstates = len(mStateNames)
 
         #if no mass matrix inverse is provided, assume a decoupled unit mass system for plotting
         if massMatrixInverseFunc is None:
-            massMatrixInverseFunc = lambda q: _np.eye(self.tns.indexSizes['d'])
+            massMatrixInverseFunc = lambda q: _np.eye(self.tns['d'].size)
         #instantiate a time integrator for simulation
         integrator = _mechanicalstate.TimeIntegrator(self.tns)
 
@@ -375,7 +373,7 @@ class LTIGoal(object):
             dist = self.getInstantStateVectorDistribution(currentDistribution=dist)
             dist = integrator.integrate(dist, dt)
             data_mean[i,:] = dist[0]
-            for dof in range(self.tns.indexSizes['d']):
+            for dof in range(self.tns['d'].size):
                 data_sigma[i,:,dof] = _np.sqrt(_np.diag(dist[1][:,dof,:,dof]))
 
 
@@ -404,31 +402,31 @@ class LTIGoal(object):
 
         #draw examples of trajectories with sampled initial states:
         for j in range(withSampledTrajectories):
-            tns_plot.setTensorFromFlattened('mean_sampled', _np.random.multivariate_normal(tns_plot.tensorDataAsFlattened['mean_initial']) )
-            tns_plot.setTensorFromFlattened('cov_sampled',  _np.random.multivariate_normal(tns_plot.tensorDataAsFlattened['cov_initial' ]) )
+            tns_plot.setTensorFromFlattened('mean_sampled', _np.random.multivariate_normal(tns_plot['mean_initial'].data_flat) )
+            tns_plot.setTensorFromFlattened('cov_sampled',  _np.random.multivariate_normal(tns_plot['cov_initial' ].data_flat) )
 
-            msd = MechanicalStateDistribution(self.tensorData['mean_sampled'], self.tensorData['cov_sampled'],)
+            msd = MechanicalStateDistribution(self['mean_sampled'].data, self['cov_sampled'].data,)
             for i in range(num):
                 msd_expected = self.getDistribution(current_msd=msd)
                 msd = integrator.integrate(msd_expected, dt)
-                self.tensorData['data_mean'][i][...] = msd.means
+                self['data_mean'].data[i][...] = msd.means
                 
-                for dof in range(self.tns.indexSizes['d']):
-                    tns_plot.tensorData['data_sigma'][i,:,:,dof] = _np.sqrt(_np.diag(msd.covariances[:,:,dof,:,:,dof]))
+                for dof in range(self.tns['d']):
+                    tns_plot['data_sigma'].data[i,:,:,dof] = _np.sqrt(_np.diag(msd.covariances[:,:,dof,:,:,dof]))
                 
             #update the desired plotting limits:
             for limitname in limits:
                 for m in range(data_mean.shape[1]):
                     mstateIndex = self._md.mStateNames2Index[limitname]
-                    sigma =tns_plot.tensorData['data_sigma'][self.commonnames2rg[limitname]]
-                    mean =tns_plot.tensorData['data_mean'][self.commonnames2rg[limitname]]
+                    sigma =tns_plot['data_sigma'].data[self.commonnames2rg[limitname]]
+                    mean =tns_plot['data_mean'].data[self.commonnames2rg[limitname]]
                     limits[limitname][0] = min(_np.min(mean-1.96*sigma), limits[limitname][0])
                     limits[limitname][1] = max(_np.max(mean+1.96*sigma), limits[limitname][1])
             #plot all dofs
             for d, dof in enumerate(dofs_to_plot):
                 for j, name in enumerate(mStateNames):
                     slicedef  = (None) + self.commonnames2rg[name] + (dof)
-                    axesArray[j,d].plot(t, tns_plot.tensorData['data_mean'][slicedef], alpha=alpha, linewidth=linewidth )
+                    axesArray[j,d].plot(t, tns_plot['data_mean'].data[slicedef], alpha=alpha, linewidth=linewidth )
 
         #override scaling:
         if posLimits is not None:

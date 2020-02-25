@@ -31,22 +31,22 @@ dofs = 4
 derivatives = 3
 p = promep.ProMeP(index_sizes={'dofs': dofs, 'interpolation_parameters':3, 'realms':2, 'derivatives':derivatives}, expected_duration=10., name='test1')
 
-Wmean = _np.zeros(p.tns.tensorShape['Wmean'])
+Wmean = _np.zeros(p.tns['Wmean'].shape)
 rtilde = 0
 gtilde = 0
-for dtilde in range(p.tns.indexSizes['dtilde']):
-    Wmean[rtilde,gtilde,:,dtilde] += 0.3456 * _np.cos(_np.linspace(0, 3.0*dtilde, p.tns.indexSizes['stilde']))
+for dtilde in range(p.tns['dtilde'].size):
+    Wmean[rtilde,gtilde,:,dtilde] += 0.3456 * _np.cos(_np.linspace(0, 3.0*dtilde, p.tns['stilde'].size))
 
 rtilde = 1
 gtilde = 2
-for dtilde in range(p.tns.indexSizes['dtilde']):
+for dtilde in range(p.tns['dtilde'].size):
     Wmean[rtilde,gtilde,:,dtilde] += - 5 * dtilde
-    Wmean[rtilde,1,:,dtilde] += _np.linspace(0, 15, p.tns.indexSizes['stilde']) 
+    Wmean[rtilde,1,:,dtilde] += _np.linspace(0, 15, p.tns['stilde'].size) 
 
-Wcov_flat = _np.zeros(p.tns.tensorShapeFlattened['Wcov'])
+Wcov_flat = _np.zeros(p.tns['Wcov'].shape_flat)
 for i in range(Wcov_flat.shape[0]):
     Wcov_flat[i,i] = 5.0
-Wcov = Wcov_flat.reshape(p.tns.tensorShape['Wcov'])
+Wcov = Wcov_flat.reshape(p.tns['Wcov'].shape)
 #r,g,s,d
 for s in range(3):
     Wcov[1,2,s,:, 0,0,s,:] = -1.0 * (s+2) * _np.eye((dofs))
@@ -81,11 +81,14 @@ if p2.name != p.name:
     raise Exception()
 if p2.expected_duration != p.expected_duration:
     raise Exception()
-if p2.tns.indexSizes != p.tns.indexSizes:
+if p2.tns.index_names != p.tns.index_names:
     raise Exception()
-if _np.any(p2.tns.tensorData['Wmean'] != p.tns.tensorData['Wmean']): #bit-perfect?
+if _np.any(p2.tns['Wmean'].data != p.tns['Wmean'].data): #bit-perfect?
     raise Exception()
-if _np.any(p2.tns.tensorData['Wcov'] != p.tns.tensorData['Wcov']):  #bit-perfect?
+if _np.any(p2.tns['Wcov'].data != p.tns['Wcov'].data):  #bit-perfect?
+    raise Exception()
+
+if (p2.tns.__repr__() != p.tns.__repr__()):  #same repr?
     raise Exception()
     
 

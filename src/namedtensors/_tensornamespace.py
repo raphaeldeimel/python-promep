@@ -12,6 +12,12 @@ also to sample trajectories from a ProMeP
 
 import numpy as _np
 import copy as _copy
+import collections as _collections
+
+#Attributes of indices, accessible through the namespace['indexname'].attribute interface
+indexDescription = _collections.namedtuple('IndexDescription', 'size values is_ordered_integers values_position')
+#Attributes of tensors, accessible through the namespace['tensorname'].attribute interface
+tensorDescription = _collections.namedtuple('TensorDescription', 'index_tuples indices_upper indices_lower ndim ndim_upper ndim_lower shape indices_position indices_upper_position indices_lower_position data data_diagonal shape_flat data_flat data_flat_diagonal data_are_external')
 
 
 class TensorNameSpace(object):
@@ -50,54 +56,25 @@ class TensorNameSpace(object):
     """
 
     def __init__(self, ntm = None):
-        self.tensorIndices = {}
-        self.tensorIndexPositions = {}
-        self.tensorIndexPositionsAll = {}
-        self.indexSizes = { }
-        self.indexValues = { }
-        self.tensorData = {}            # contains the actual array 
-        self._withExternalArrays = set()
-        self.tensorDataAsFlattened = {} # flattened view on the actual array
-        self.tensorDataAsFlattenedDiagonal = {} # diagonal view on the flattened tensor
-        self.tensorDataDiagonal = {} # diagonal view on the tensor
         self.tensorInitialValues = {} #what the value pattern should be on reset/init of a tensor 
-        self.tensorShape = {}
-        self.tensorShapeFlattened = {}
-        self.registeredScalars = {}
-        self.registeredAdditions = {}
-        self.registeredSubtractions = {}
-        self.registeredScalarMultiplications = {}
-        self.registeredElementwiseMultiplications = {}
-        self.registeredContractions = {}
-        self.registeredTransposes = {}
-        self.registeredInverses = {}
-        self.registeredExternalFunctions = {}
-        self.registeredMeanOperators = {}
-        self.registeredSliceOperations = {}
-        self.registeredSumOperations = {}
-        self.registeredResets = {}
-        self.registeredAdditionToSlice = {}
+        self.registeredOperations = {}
         self._tensordot = _np.tensordot #which library to use
         self.update_order = []
+        self._containeritems = {}
+        self.index_names = set()
+        self.tensor_names = set()
+
         
         if ntm is not None:
-            self.indexSizes = dict(ntm.indexSizes)
-            self.indexValues = dict(ntm.indexValues)
+            for name in ntm.index_names:
+                if name.endswith('_'):
+                    continue
+                if ntm[name].is_ordered_integers:
+                    self.registerIndex(name, ntm[name].size)
+                else:
+                    self.registerIndex(name, ntm[name].size, ntm[name].values)
 
-    def copy(self):
-        clone = _copy.deepcopy(self)
-        #need to restore numpy views which get deep-copied accidentally:
-        for name in self._withExternalArrays:
-            clone.tensorData[name] = self.tensorData[name]
-        clone.tensorDataAsFlattened = {}
-        for name in clone.tensorData:
-            view_flat = clone.tensorData[name].view()
-            view_flat.shape = clone.tensorShapeFlattened[name]
-            clone.tensorDataAsFlattened[name] = view_flat
-        for name in clone.registeredTransposes:
-            tensorname, axes  = clone.registeredTransposes[name]
-            clone.tensorData[name] = _np.transpose(clone.tensorData[tensorname], axes=axes)
-        return clone
+
         
 
     def registerIndex(self, name, size, values=None):
@@ -108,16 +85,26 @@ class TensorNameSpace(object):
         """
         if name[-1] == '_':
             raise ValueError("trailing underscore is a special character for index names")
-        name2 = name + '_'
-        self.indexSizes[name] = size
-        self.indexSizes[name2] = size
         if values == None:
-            self.indexValues[name] = None
-            self.indexValues[name2] = None            
+            is_ordered_integers = True
+            values = list(range(size))
         else:
-            self.indexValues[name] = list(values)
-            self.indexValues[name2] = list(values)
-        return name, name2
+            is_ordered_integers = False
+            values = list(values)
+
+        values_position  = {values[pos]:pos for pos in range(size) } #reverse lookup
+
+        desc = indexDescription(size, values, is_ordered_integers, values_position)
+        if name in self._containeritems:
+            raise ValueError("Name {} already used: {}".format(name, self._containeritems[name]))
+        name_ = name + '_'
+        self._containeritems[name] = desc
+        self._containeritems[name_] = desc
+        self.index_names.add(name)
+        self.index_names.add(name_)
+        
+
+        return name, name_
 
 
     def cloneIndex(self, clonefrom, newname):
@@ -125,12 +112,29 @@ class TensorNameSpace(object):
         Create a new index with identical size and values of thegiven index
         
         """
-        return self.registerIndex(newname, self.indexSizes[clonefrom], self.indexValues[clonefrom])
+        if newname in self.index_names:
+            return newname, newname+'_'
+        else:
+            if self[clonefrom].is_ordered_integers:
+                name, name_ = self.registerIndex(newname, self[clonefrom].size)
+            else:
+                name, name_ = self.registerIndex(newname, self[clonefrom].size, self[clonefrom].values)
+            return name, name_
 
 
-    def registerTensor(self, name, indexTuples, external_array = None, initial_values='zeros'):
+    def registerTensor(self, name, description, external_array = None, initial_values='zeros'):
         """
         Make the manager aware of a specific tensor and the shape of its indices
+        
+        description: 
+                Either a tuple of index tuples, e.g. (('a', 'b')('c',))
+                
+                Or a tensorDescription object, e.g. from another namespace
+        
+        external_array: if data are to be stored somewhere else, set the ndarray here
+        
+        initial_values: 'zero', 'ones', 'identity', 'keep'
+        
         
         Only "input" tensors need to be registered; tensors computed by operations are registered automatically when registerContraction() is called
         
@@ -138,11 +142,19 @@ class TensorNameSpace(object):
         
         (lower case i and t indicate inverses and transposes respectively, '_' indicates contraction)
         
-        initial_values: 'zero', 'ones', 'identity', 'keep'
         
         """
-        if name in self.tensorIndices:
-            raise Warning("tensor name {} is already registered".format(name))
+        if name in self._containeritems:
+            raise ValueError("Name already taken: {}".format(self._containeritems[name]))
+           
+        if description.__class__ == tensorDescription: #requested registering of a tensor from another namespace
+            self._containeritems[name] = description
+            self.tensor_names.add(name)
+            self.tensorInitialValues[name] = 'keep'
+            return
+        
+        #else: tensor from scratch:
+        indexTuples = description
             
         #catch a common mistake due to a pecularity of python syntax:
         if indexTuples[0].__class__ == str or indexTuples[1].__class__ == str:
@@ -150,39 +162,53 @@ class TensorNameSpace(object):
         
         indexTuples = (tuple(indexTuples[0]),tuple(indexTuples[1]))  #enforce uniformity of index definitions
         
-        self._setIndexInfo(name, indexTuples) #add index info to precomputed data structures
-                
-        tensor_shape =  self.getShape(indexTuples)
+        index2position_upper, index2position_lower, index2position = self._compute_index_reverse_lookup(indexTuples)
+
+        tensor_shape =  tuple([self[n].size for n in indexTuples[0]] + [self[n].size for n in indexTuples[1]])
+        
         n_upper  = len(indexTuples[0])
         tensor_shape_flattened = (int(_np.prod(tensor_shape[:n_upper])) , int(_np.prod(tensor_shape[n_upper:])))  #int needed because prod converts empty tuples into float 1.0
 
         if external_array is None:
-            self.tensorData[name] = _np.zeros(tensor_shape)
+            dataArray = _np.zeros(tensor_shape)
         else:
             if external_array.shape != tensor_shape:
                 raise ValueError(f'{external_array.shape} != {tensor_shape}')
-            self.tensorData[name] = external_array  #set a reference to an external data
+            dataArray = external_array  #set a reference to an external data
         
-        self.tensorShape[name] = tensor_shape
         try:
-            view_flat = self.tensorData[name].view()
+            view_flat = dataArray.view()
             view_flat.shape = tensor_shape_flattened
-            self.tensorShapeFlattened[name] = tensor_shape_flattened
-            self.tensorDataAsFlattened[name] = view_flat
             if view_flat.shape[0] == view_flat.shape[1]: #for "square" tensors, construct a view on the diagonal
-                self.tensorDataAsFlattenedDiagonal[name] = _np.einsum('ii->i',view_flat) # diagonal view on the flattened tensor
-                n_upper = len(self.tensorIndices[name][0])
-                self.tensorDataDiagonal[name] = self.tensorDataAsFlattenedDiagonal[name].reshape(self.tensorShape[name][:n_upper]) #un-flattened, i.e. tensor with only upper indices
+                view_flat_diagonal = _np.einsum('ii->i',view_flat) # diagonal view on the flattened tensor
+                view_diagonal = view_flat_diagonal.reshape(tensor_shape[:n_upper]) #un-flattened, i.e. tensor with only upper indices
+            else:
+                view_diagonal = None
+                view_flat_diagonal = None
 
         except AttributeError:  #if we cannot create a flattened view, warn and continue
             print('"warning: could not create a flat view for' + name)
+            view_diagonal = None
+            view_flat_diagonal = None
+            view_flat = None
             pass 
+        
+        indices_position, index2position_upper, index2position_lower = self._compute_index_reverse_lookup(indexTuples)
+        if external_array is None:
+            data_are_external = False
+        else:
+            data_are_external = True
+            
+        
+        desc = tensorDescription(indexTuples, indexTuples[0], indexTuples[1], len(tensor_shape), len(indexTuples[0]), len(indexTuples[1]), tensor_shape, indices_position, index2position_upper, index2position_lower, dataArray, view_diagonal, tensor_shape_flattened, view_flat,  view_flat_diagonal, data_are_external)
+        self._containeritems[name] = desc
+        self.tensor_names.add(name)
         
         self.tensorInitialValues[name] = initial_values
         self.resetTensor(name)
 
 
-    def _setIndexInfo(self, name, indexTuples):
+    def _compute_index_reverse_lookup(self, indexTuples):
         indexPositions = ({},{})
         indexPositionsAll = {}
         pos = 0
@@ -191,9 +217,7 @@ class TensorNameSpace(object):
                 indexPositions[l][iname] = pos
                 indexPositionsAll[iname] = pos
                 pos = pos + 1
-        self.tensorIndices[name] = indexTuples
-        self.tensorIndexPositions[name] = indexPositions        
-        self.tensorIndexPositionsAll[name] = indexPositionsAll
+        return indexPositionsAll, indexPositions[0],indexPositions[1]
         
 
     def registerBasisTensor(self, basistensorname, index_name_tuples,  index_value_tuples, ignoreLabels=False):
@@ -208,16 +232,16 @@ class TensorNameSpace(object):
         self.registerTensor(basistensorname, index_name_tuples)
         coord_pos = []
         for l in range(2):
-            for value, index_name in zip(index_value_tuples[l], self.tensorIndices[basistensorname][l]):
+            for value, index_name in zip(index_value_tuples[l], self[basistensorname].index_tuples[l]):
                 if value is None:
                     coord_pos.append(value) #None selects everything
-                elif self.indexValues[index_name] is None or ignoreLabels:
+                elif self[index_name].values is None or ignoreLabels:
                     coord_pos.append(value) #default to natural numbers as index
                 else:  #do label-based lookup of position within data array
-                    labels = self.indexValues[index_name]
+                    labels = self[index_name].values
                     labelpos = labels.index(value)
                     coord_pos.append(labelpos)
-        self.tensorData[basistensorname][tuple(coord_pos)] = 1.0
+        self[basistensorname].data[tuple(coord_pos)] = 1.0
         return basistensorname
 
     def renameIndices(self, A, indices_to_rename, result_name=None, inPlace=False):
@@ -229,12 +253,12 @@ class TensorNameSpace(object):
         inPlace=True modifies the tensor in place. Warning: this may be very confusing if done *after* using the tensor as operand!
         """
         for index in indices_to_rename:
-            if self.indexSizes[index] != self.indexSizes[indices_to_rename[index]]:
+            if self[index].size != self[indices_to_rename[index]].size:
                 raise ValueError("Renamed indices must match in size! (attempted {}->{})".format(index,indices_to_rename[index]))
              
         #map all indices of the tensor given the map:
         renamed_tuples=[]
-        for tup in self.tensorIndices[A]:
+        for tup in self[A].index_tuples:
             renamed_tuple = []
             for index in tup:
                 if index in indices_to_rename:
@@ -245,30 +269,34 @@ class TensorNameSpace(object):
         renamed_tuples = tuple(renamed_tuples)
 
         if inPlace:
-            self._setIndexInfo(A, renamed_tuples) 
+            index2position, index2position_upper, index2position_lower = self._compute_index_reverse_lookup(renamed_tuples)        
+            d = self._containeritems[A]
+            d_renamed = tensorDescription(renamed_tuples, renamed_tuples[0], renamed_tuples[1], d[3], d[4], d[5], d[6], index2position,  index2position_upper, index2position_lower, d[10],d[11], d[12], d[13], d[14], d[15])
+            self._containeritems[A] = d_renamed
         else:        
             if result_name is None:
                 result_name = "renamed({})".format(A)
-            self.registerTensor(result_name, renamed_tuples, external_array=self.tensorData[A])
+            self.registerTensor(result_name, renamed_tuples, external_array=self[A].data)
         return result_name
+
 
     def registerElementwiseMultiplication(self, A, B, result_name=None, out_array=None, initial_values_out_array='keep'):
         
         if result_name is None:
             result_name = A + '*' + B
             
-        tuplesA = self.tensorIndices[A]
-        tuplesB = self.tensorIndices[B]
+        tuplesA = self[A].index_tuples
+        tuplesB = self[B].index_tuples
         if tuplesA != tuplesB:
             try:
-                B_permuter = [ tuplesB[0].index(name) for name in tuplesA[0] ] + [ len(tuplesA[0])+tuplesB[1].index(name) for name in tuplesA[1] ]
+                B_permuter = [ tuplesB[0].index(name) for name in self[A].indices_upper ] + [ self[A].ndim_upper+self[B].indices_lower.index(name) for name in self[A].indices_lower ]
             except ValueError:
-                raise ValueError("tensors must have exactly the same indices! {} vs. {}".format(self.tensorIndices[A], self.tensorIndices[B]) )
+                raise ValueError("tensors must have exactly the same indices! {} vs. {}".format(self[A].index_tuples, self[B].index_tuples) )
         else:
             B_permuter = None
     
-        self.registerTensor(result_name, self.tensorIndices[A], external_array=out_array,initial_values=initial_values_out_array)        
-        self.registeredElementwiseMultiplications[result_name] = (A, B, B_permuter)
+        self.registerTensor(result_name, self[A].index_tuples, external_array=out_array,initial_values=initial_values_out_array)        
+        self.registeredOperations[result_name] = ('elementwise_multiply', A, B, B_permuter)
         self.update_order.append(result_name)
         return result_name            
             
@@ -280,13 +308,13 @@ class TensorNameSpace(object):
     
         if _np.isreal(scalar):
             pass
-        elif self.tensorIndices[scalar] == ((),()):
+        elif self[scalar].index_tuples == ((),()):
             pass
         else:
             raise ValueError("scalar argument needs to be a (0,0) tensor!")
     
-        self.registerTensor(result_name, self.tensorIndices[A], external_array=out_array, initial_values=initial_values_out_array)        
-        self.registeredScalarMultiplications[result_name] = (A, scalar)
+        self.registerTensor(result_name, self[A].index_tuples, external_array=out_array, initial_values=initial_values_out_array)        
+        self.registeredOperations[result_name] = ('scalar_multiply', A, scalar)
         self.update_order.append(result_name)
         return result_name
 
@@ -295,7 +323,7 @@ class TensorNameSpace(object):
         If executed, it sets coordinates back to the inital values
         """
         result_name = 'reset({})'.format(A)
-        self.registeredResets[result_name] = (A)
+        self.registeredOperations[result_name] = ('reset', A)
         self.update_order.append(result_name)
         return result_name
 
@@ -313,35 +341,33 @@ class TensorNameSpace(object):
             
         
         """
- 
-        tensorIndices = self.tensorIndices
        
         tensorDotAxesTuples=([],[])
         contractedIndicesA = (set(), set())
         contractedIndicesB = (set(), set())
         
-        offset_lower_left = len(tensorIndices[tensornameA][0])
-        offset_lower_right = len(tensorIndices[tensornameB][0])
+        offset_lower_left = self[tensornameA].ndim_upper
+        offset_lower_right = self[tensornameB].ndim_upper 
 
         for k in range(2): #check upper-lower or lower-upper pairs?
-            for i_left, name in enumerate (tensorIndices[tensornameA][k]):
-                for i_right, name2 in enumerate(tensorIndices[tensornameB][1-k]):
+            for i_left, name in enumerate (self[tensornameA].index_tuples[k]):
+                for i_right, name2 in enumerate(self[tensornameB].index_tuples[1-k]):
                     if name == name2:
                         tensorDotAxesTuples[0].append(    k  * offset_lower_left  + i_left ) 
                         tensorDotAxesTuples[1].append( (1-k) * offset_lower_right + i_right ) 
                         contractedIndicesA[k].add(name)
                         contractedIndicesB[1-k].add(name2)
         
-        resultTensorIndicesLowerFromA = list(tensorIndices[tensornameA][1])
+        resultTensorIndicesLowerFromA = list(self[tensornameA].indices_lower)
         for i in contractedIndicesA[1]:
             resultTensorIndicesLowerFromA.remove(i)
-        resultTensorIndicesLowerFromB = list(tensorIndices[tensornameB][1])
+        resultTensorIndicesLowerFromB = list(self[tensornameB].indices_lower)
         for i in contractedIndicesB[1]:
             resultTensorIndicesLowerFromB.remove(i)
-        resultTensorIndicesUpperFromA = list(tensorIndices[tensornameA][0])
+        resultTensorIndicesUpperFromA = list(self[tensornameA].indices_upper)
         for i in contractedIndicesA[0]:
             resultTensorIndicesUpperFromA.remove(i)
-        resultTensorIndicesUpperFromB = list(tensorIndices[tensornameB][0])
+        resultTensorIndicesUpperFromB = list(self[tensornameB].indices_upper)
         for i in contractedIndicesB[0]:
             resultTensorIndicesUpperFromB.remove(i)
 
@@ -354,11 +380,11 @@ class TensorNameSpace(object):
         #ensure Ricci notation rule:
         for idx in resultTensorIndicesUpperFromA:
             if idx in resultTensorIndicesUpperFromB:
-                raise ValueError("Tensors both have the same upper index ({}) - forbidden by Ricci notation\n{}: {}\n{}: {}".format(idx, tensornameA, tensorIndices[tensornameA],tensornameB, tensorIndices[tensornameB]))
+                raise ValueError("Tensors both have the same upper index ({}) - forbidden by Ricci notation\n{}: {}\n{}: {}".format(idx, tensornameA, self[tensornameA].index_tuples,tensornameB, self[tensornameB].index_tuples))
         #ensure Ricci notation rule:
         for idx in resultTensorIndicesLowerFromA:
             if idx in resultTensorIndicesLowerFromB:
-                raise ValueError("Tensors both have the same lower index ({}) - forbidden by Ricci notation\n{}: {}\n{}: {}".format(idx, tensornameA, tensorIndices[tensornameA],tensornameB, tensorIndices[tensornameB]))
+                raise ValueError("Tensors both have the same lower index ({}) - forbidden by Ricci notation\n{}: {}\n{}: {}".format(idx, tensornameA, self[tensornameA].index_tuples,tensornameB, self[tensornameB].index_tuples))
 
         #compute the permutation for making tensordot results conformant to our upper-lower index ordering convention, and/or to align to requested index order
         if align_result_to == None:
@@ -376,7 +402,7 @@ class TensorNameSpace(object):
         
         
         self.registerTensor(result_name, align_result_to, external_array=out_array, initial_values=initial_values_out_array)
-        self.registeredContractions[result_name] = (tensornameA, tensornameB, tuple(tensorDotAxesTuples), permuter)
+        self.registeredOperations[result_name] = ('contract', tensornameA, tensornameB, tuple(tensorDotAxesTuples), permuter)
         self.update_order.append(result_name)
         return result_name
 
@@ -386,11 +412,11 @@ class TensorNameSpace(object):
         """
         if result_name == None:
             result_name ='({})^T'.format(tensorname)
-        upper, lower = self.tensorIndices[tensorname]
+        upper, lower = self[tensorname].index_tuples
         
              
         axes = list(range(len(upper),len(lower)+len(upper)))+list(range(0, len(upper))) #lower and upper indices swap places        
-        view = _np.transpose(self.tensorData[tensorname], axes=axes) #we assume this is returns a view - replaces the array in tensorData
+        view = _np.transpose(self[tensorname].data, axes=axes) #we assume this is returns a view - replaces the array in data
 
         if flip_underlines:
             result_upper = tuple([self._flipTrailingUnderline(n) for n in lower])
@@ -400,7 +426,7 @@ class TensorNameSpace(object):
 
         self.registerTensor(result_name, (result_upper,result_lower), external_array=view)
         #no need to save operand parameters for copmutation as we use views
-        self.registeredTransposes[result_name] = (tensorname, axes)
+        self.registeredOperations[result_name] = ('transpose', tensorname, axes)
         self.update_order.append(result_name)        
         return result_name
 
@@ -416,7 +442,7 @@ class TensorNameSpace(object):
         if side == 'upper': side='left'  #synonymous
         if side == 'lower': side='right' #synonymous
         
-        upper, lower = self.tensorIndices[tensorname]
+        upper, lower = self[tensorname].index_tuples
         result_upper,result_lower = lower, upper
         
         if flip_underlines: 
@@ -429,7 +455,7 @@ class TensorNameSpace(object):
             result_name ='({})^#'.format(tensorname)
         
         self.registerTensor(result_name, (result_upper, result_lower), external_array=out_array, initial_values=initial_values_out_array)
-        self.registeredInverses[result_name] = (tensorname, side, regularization)
+        self.registeredOperations[result_name] = ('pseudoinvert', tensorname, side, regularization)
         self.update_order.append(result_name)        
         return result_name
 
@@ -440,7 +466,7 @@ class TensorNameSpace(object):
         
         accumulate: if true, add B to A (result_name, align_result_to, out_array, and flip_underlines becomes ineffective)
         """
-        tuplesA = self.tensorIndices[A]
+        tuplesA = self[A].index_tuples
         B_permuter = None
         
         slicedefB, tuplesB = self.makeSliceDef(B, slice_indices)
@@ -450,13 +476,13 @@ class TensorNameSpace(object):
         except ValueError:
             raise ValueError("tensors must have exactly the same indices! {} vs. {} + {}".format(tuplesA, tuplesB, list(slice_indices)) )
 
-        slicedB = self.tensorData[B][slicedefB]
+        slicedB = self[B].data[slicedefB]
         viewB = _np.transpose(slicedB, axes=permuter)
 
 
         txt = ''.join([idx+str(slice_indices[idx]) for idx in slice_indices])
         result_name = "accumulate({},{},{})".format(A,B, txt)
-        self.registeredAdditionToSlice[result_name] = (A,B,viewB, slice_indices)
+        self.registeredOperations[result_name] = ('add_to_slice', A,B,viewB, slice_indices)
         self.update_order.append(result_name)        
         return result_name        
 
@@ -466,8 +492,8 @@ class TensorNameSpace(object):
         
         accumulate: if true, add B to A (result_name, align_result_to, out_array, and flip_underlines becomes ineffective)
         """
-        tuplesA = self.tensorIndices[A]
-        tuplesB = self.tensorIndices[B]
+        tuplesA = self[A].index_tuples
+        tuplesB = self[B].index_tuples
         A_permuter = None
         B_permuter = None
         if align_result_to == None or accumulate:
@@ -475,15 +501,15 @@ class TensorNameSpace(object):
 
         views = []
         for name in (A,B):
-            index_tuples = self.tensorIndices[name]
+            index_tuples = self[name].index_tuples
             if align_result_to == index_tuples:
-                view = self.tensorData[name].view()
+                view = self[name].data.view()
             else:                        
                 try:
                     permuter = [ index_tuples[0].index(name) for name in align_result_to[0] ] + [ len(align_result_to[0])+index_tuples[1].index(name) for name in align_result_to[1] ]
                 except ValueError:
-                    raise ValueError("tensors must have exactly the same indices! {} vs. {}".format(align_result_to, self.tensorIndices[name]) )
-                view = _np.transpose(self.tensorData[name], axes=permuter)
+                    raise ValueError("tensors must have exactly the same indices! {} vs. {}".format(align_result_to, self[name].index_tuples) )
+                view = _np.transpose(self[name].data, axes=permuter)
             views.append(view)
 
 
@@ -494,13 +520,13 @@ class TensorNameSpace(object):
             result_name ='({0}+{1})'.format(A,B)
 
         if flip_underlines and not accumulate:
-            result_upper = tuple([self._flipTrailingUnderline(n) for n in self.tensorIndices[A][0]])
-            result_lower = tuple([self._flipTrailingUnderline(n) for n in self.tensorIndices[A][1]])
+            result_upper = tuple([self._flipTrailingUnderline(n) for n in  self[A].indices_upper])
+            result_lower = tuple([self._flipTrailingUnderline(n) for n in  self[A].indices_lower])
         else: 
-            result_upper, result_lower = self.tensorIndices[A]
+            result_upper, result_lower = self[A].index_tuples
         
         self.registerTensor(result_name, align_result_to, external_array=out_array, initial_values=initial_values_out_array)
-        self.registeredAdditions[result_name] = (A,B, views)
+        self.registeredOperations[result_name] = ('add', A,B, views)
         self.update_order.append(result_name)        
         return result_name        
 
@@ -508,13 +534,13 @@ class TensorNameSpace(object):
         """
         register a subtraction operation (A-B)
         """
-        tuplesA = self.tensorIndices[A]
-        tuplesB = self.tensorIndices[B]
+        tuplesA = self[A].index_tuples
+        tuplesB = self[B].index_tuples
         if tuplesA != tuplesB:
             try:
                 B_permuter = [ tuplesB[0].index(name) for name in tuplesA[0] ] + [ len(tuplesA[0])+tuplesB[1].index(name) for name in tuplesA[1] ]
             except ValueError:
-                raise ValueError("tensors must have exactly the same indices! {} vs. {}".format(self.tensorIndices[A], self.tensorIndices[B]) )
+                raise ValueError("tensors must have exactly the same indices! {} vs. {}".format(self[A].index_tuples, self[B].index_tuples) )
         else:
             B_permuter = None
             
@@ -522,13 +548,13 @@ class TensorNameSpace(object):
             result_name ='({0}-{1})'.format(A,B)
 
         if flip_underlines:
-            result_upper = tuple([self._flipTrailingUnderline(n) for n in self.tensorIndices[A][0]])
-            result_lower = tuple([self._flipTrailingUnderline(n) for n in self.tensorIndices[A][1]])
+            result_upper = tuple([self._flipTrailingUnderline(n) for n in self[A].indices_upper])
+            result_lower = tuple([self._flipTrailingUnderline(n) for n in self[A].indices_lower])
         else: 
-            result_upper, result_lower = self.tensorIndices[A]
+            result_upper, result_lower = self[A].index_tuples
             
         self.registerTensor(result_name, (result_upper,result_lower), external_array=out_array, initial_values=initial_values_out_array)            
-        self.registeredSubtractions[result_name] = (A,B, B_permuter)
+        self.registeredOperations[result_name] = ('subtract', A,B, B_permuter)
         self.update_order.append(result_name)        
         return result_name        
 
@@ -537,7 +563,7 @@ class TensorNameSpace(object):
             result_name = ",".join(out_tensor_names)
         for name, indices in zip(out_tensor_names, out_tensor_indices):
             self.registerTensor(name, indices)
-        self.registeredExternalFunctions[result_name] = (func,  in_tensor_names, out_tensor_names)
+        self.registeredOperations[result_name] = ('external_function', func,  in_tensor_names, out_tensor_names)
         self.update_order.append(result_name)
         return result_name
 
@@ -547,7 +573,8 @@ class TensorNameSpace(object):
         """
         if result_name == None:
             result_name = "mean_{}({})".format(index_to_sum,A)
-        upper, lower = self.tensorIndexPositions[A]
+        upper = self[A].indices_upper_position
+        lower = self[A].indices_lower_position
         result_upper = upper.copy()
         result_lower = lower.copy()
         if index_to_sum in upper:
@@ -560,7 +587,7 @@ class TensorNameSpace(object):
             raise ValueError("index to sum is not in tensor")
 
         self.registerTensor(result_name, (result_upper,result_lower), out_array=out_array, initial_values=initial_values_out_array)
-        self.registeredMeanOperators[result_name] = (A, dim)
+        self.registeredOperations[result_name] = ('mean', A, dim)
         self.update_order.append(result_name)
         return result_name
 
@@ -573,10 +600,9 @@ class TensorNameSpace(object):
             if result_name in self.registeredSliceOperations:
                 raise ValueError("a slice with the same name is already registered")
         slicedef, sliced_indextuples = self.makeSliceDef(A, sliced_indices_values)
-        view = self.tensorData[A][slicedef]
-        self.registerTensor(result_name, sliced_indextuples, external_array=self.tensorData[A][slicedef], initial_values='keep')
+        self.registerTensor(result_name, sliced_indextuples, external_array=self[A].data[slicedef], initial_values='keep')
         #no need to save operand parameters for copmutation as we use views
-        self.registeredSliceOperations[result_name] = (A, slicedef, sliced_indextuples)
+        self.registeredOperations[result_name] = ('slice', A, slicedef, sliced_indextuples)
         self.update_order.append(result_name)        
         return result_name
 
@@ -592,32 +618,27 @@ class TensorNameSpace(object):
 
         if sumcoordinates:
             tuplesReference = ((),()) #result is a scalar
-            views = [self.tensorData[name] for name in args]
+            views = [self[name].data for name in args]
         else:
-            tuplesReference = self.tensorIndices[args[0]] #everything is coerced into this order
-            views = [ self._alignDimensions(tuplesReference, self.tensorIndices[name],  self.tensorData[name]) for name in args ]
+            tuplesReference = self[args[0]].index_tuples #everything is coerced into this order
+            views = [ self._alignDimensions(tuplesReference, self[name].index_tuples,  self[name].data) for name in args ]
         
         self.registerTensor(result_name, tuplesReference, external_array=out_array, initial_values=initial_values_out_array)
-        self.registeredSumOperations[result_name] = (args, views, sumcoordinates)
+        self.registeredOperations[result_name] = ('sum', args, views, sumcoordinates)
         self.update_order.append(result_name)        
         return result_name
 
 
     def getFlattened(self, tensorname):
-            view = self._ntm.tensorData[tensorname].view()
+            view = self._ntm[tensorname].data.view()
             view.shape = self.tensorShapeFlattened[tensorname]
 
     def getSample(self, meanTensorName, covTensorName):
         """
         wrapper method for scipy's multivariate_normal()
         """
-        return _np.random.multivariate_normal(self.tensorDataAsFlattened[meanTensorName], self.tensorDataAsFlattened[covTensorName])
+        return _np.random.multivariate_normal(self[meanTensorName].data_flat, self[covTensorName].data_flat)
 
-    def getShape(self, upperLowerTuple):
-        """
-        return shape of array holding tensor coordinates given the tupple of upper and lower index tuples
-        """
-        return tuple([self.indexSizes[n] for n in upperLowerTuple[0]] + [self.indexSizes[n] for n in upperLowerTuple[1]])
 
     def _flipTrailingUnderline(self, name):
         if name.endswith('_'):
@@ -625,20 +646,20 @@ class TensorNameSpace(object):
         else:
             return name + '_'
 
-    def getIndexNames(tensorname):
-        return self.tensorIndices[tensorname]  
 
-
-    def getUpperIndexPosition(tensorname, indexname):
-        return self.tensorIndices[tensorname][0].index(indexname)    
-
-    def getLowerIndexPosition(tensorname, indexname):
-        return self.tensorIndices[tensorname][1].index(indexname) + len(self.tensorIndices[tensorname][0])
-
-
-    def getSize(indexname):
-        return self.indexSizes[indexname]
-
+    def makeTensorSliceView(self, name, sliced_indices_values):
+        """
+        Make a view on the specified slice of tensor coordinates.
+        
+        This is mostly intended for easily converting from/to representations which
+        specify things individually
+        
+        By returning a view, data can be accessed quickly in loops
+        """
+        slicedef, indices  = self.makeSliceDef(name, sliced_indices_values)
+        view = self[name].data[slicedef]
+        return view, indices
+        
 
     def resetTensor(self, name):
         """
@@ -650,10 +671,9 @@ class TensorNameSpace(object):
         elif initial_values == 'keep':
             return
         elif initial_values == 'identity' or 'kroneckerdelta':
-            if len(self.tensorIndices[name]) == 2:
-                upper, lower = self.tensorIndices[name]
-                for ui, li in zip(upper, lower):
-                    if self.indexSizes[ui] != self.indexSizes[li]:
+            if len(self[name].index_tuples) == 2:
+                for ui, li in zip(self[name].indices_upper, self[name].indices_lower):
+                    if self[ui].size != self[li].size:
                         raise Warning("Upper/Lower Index size does not match: {} vs. {}. Setting identity is not sensible.".format(ul, li))
             self.setTensorToIdentity(name)
         elif initial_values == 'ones':
@@ -665,14 +685,30 @@ class TensorNameSpace(object):
     def setTensor(self, name, values, arrayIndices=None):
         """
         Use this setter to avoid breaking internal stuff
+        
+        name: tensor to set
+        
+        values: tensor name, or tensorDescription or numpy array to set tensor from
+        
+        arrayIndices: you can provide this for numpy arrays to do an additional check / auto-align the array's dimensions 
         """
-        if name not in self.tensorData:
+        if name not in self.tensor_names:
             raise ValueError()
         if values is None:
             return
-        if arrayIndices is not None:
-            values = self._alignDimensions(self.tensorIndices[name], arrayIndices, values)
-        self.tensorData[name][...] = values
+        if values.__class__ == tensorDescription: #we got handed a tensorDescription tuple?
+            A = values
+            values = self._alignDimensions(self[name].index_tuples, A.index_tuples, A.data)
+        elif values.__class__ == str:
+            A = values
+            if not A in self.tensor_names: #we got handed a name string?
+                raise ValueError("Input tensor named {} does not exist in the namespace".format(A))
+            values = self._alignDimensions(self[name].index_tuples, self[A].index_tuples, self[A].data)
+        elif arrayIndices is not None: #try to treat argument as numpy array
+                values = self._alignDimensions(self[name].index_tuples, arrayIndices, values)
+        else:
+            pass #assume its a numpy array
+        self[name].data[...] = values
 
 
     def setTensorSlice(self, name, sliced_indices_values, slice_name, slice_namespace=None):
@@ -688,7 +724,7 @@ class TensorNameSpace(object):
         If an index is in name but neither in slice_name nor in sliced_index_values, then we broadcast values across this index
         
         """
-        if name not in self.tensorData:
+        if name not in self.tensor_names:
             raise ValueError()
         
         if slice_namespace == None:
@@ -697,11 +733,11 @@ class TensorNameSpace(object):
         slicedef, sliced_indextuples = self.makeSliceDef(name, sliced_indices_values)
 
         #set the specified slice of name to values from slice_name
-        slicedtensordata = self.tensorData[name][tuple(slicedef)]
+        slicedtensordata = self[name].data[tuple(slicedef)]
         if _np.isreal(slice_name): #user obviously just wants to set all elements to a common value (e.g. 0)
             _np.copyto(slicedtensordata, slice_name)        
         else:
-            values_aligned = self._alignDimensions(sliced_indextuples, slice_namespace.tensorIndices[slice_name] , slice_namespace.tensorData[slice_name])        
+            values_aligned = self._alignDimensions(sliced_indextuples, slice_namespace[slice_name].index_tuples , slice_namespace[slice_name].data)        
             _np.copyto(slicedtensordata, values_aligned)
 
 
@@ -714,18 +750,22 @@ class TensorNameSpace(object):
         wildcard = slice(None)
         slicedef = []
         sliced_indextuples = []
-        for ul in range(2):
+        for index2pos in (self[name].indices_upper_position, self[name].indices_lower_position) :
             indices = []
-            for index_name in self.tensorIndexPositions[name][ul]:
+            for index_name in index2pos:
                 if index_name in sliced_indices_values:  #this index is being sliced:
-                    axis = self.tensorIndexPositionsAll[name][index_name]
+                    axis = self[name].indices_position[index_name]
                     label = sliced_indices_values[index_name]
-                    slicedef.append(self._getPositionofIndexLabel(index_name, label))
+                    if self[index_name].is_ordered_integers:
+                       pos = label
+                    else:
+                       pos = self[index_name].values_position[label]
+                    slicedef.append(pos)
                 else:
                     slicedef.append(wildcard)  
                     indices.append(index_name)
             sliced_indextuples.append(tuple(indices))
-        if len(slicedef) == len(self.tensorData[name].shape):        
+        if len(slicedef) == len(self[name].shape):        
             slicedef.append(Ellipsis)  #this trick nudges numpy into always returning a view on the value if the tensor is a scalar (zero indices), instead of returning the value itsel
         return tuple(slicedef), tuple(sliced_indextuples) 
         
@@ -734,13 +774,19 @@ class TensorNameSpace(object):
         """
         Use this setter to avoid breaking internal stuff
         """
-        if name not in self.tensorData:
+        if values.__class__ == tensorDescription:
+            view = self._alignDimensions(self[name].index_tuples, values.index_tuples, values.data)
+            
+        if name not in self.tensor_names:
             raise ValueError()
         if values is None:
             return
         if arrayIndices is not None:
-            values = self._alignDimensions(self.tensorIndices[name], arrayIndices, values)
-        _np.add(self.tensorData[name], values, out=self.tensorData[name])
+            view = self._alignDimensions(self[name].index_tuples, arrayIndices, values)
+        else:
+            view = values
+            
+        _np.add(self[name].data, view, out=self[name].data)
 
 
     def _alignDimensions(self, tuplesA, tuplesB, arrayB):
@@ -763,10 +809,10 @@ class TensorNameSpace(object):
         
         Use this setter to avoid breaking internal stuff
         """
-        if name not in self.tensorData:
+        if name not in self.tensor_names:
             raise ValueError()
         if values is not None:
-            _np.copyto(self.tensorDataAsFlattened[name], values)
+            _np.copyto(self[name].data_flat, values)
 
 
     def setTensorToIdentity(self, name, scale=1.0):
@@ -777,11 +823,11 @@ class TensorNameSpace(object):
             (a,b),(a_,b_) -> delta(a,a_) : delta(b,b_)
         
         """
-        row, column = self.tensorShapeFlattened[name]        
+        row, column = self[name].shape_flat
         if row != column:  #not exactly what we want to test
             raise ValueError("Cannot set identity if upper and lower indices don't match!")
         self.setTensor(name, 0.0)
-        _np.fill_diagonal(self.tensorDataAsFlattened[name], scale)
+        _np.fill_diagonal(self[name].data_flat, scale)
 
 
     def update(self, *args):
@@ -792,6 +838,8 @@ class TensorNameSpace(object):
         """        
         if args == (): #if no names are given, iterate through all registered operations to update all tensors
             order = self.update_order
+        elif len(args) == 1 and not args[0].__class__== str: #we've probably been given a single list / tuple
+            order = args[0]
         else:
             order=args
 
@@ -801,138 +849,130 @@ class TensorNameSpace(object):
             B = ""  
             operation = ""
             B_permuter = ""  
+            operation_name  = self.registeredOperations[result_name][0]
+            args  = self.registeredOperations[result_name][1:]
             try:
-                if result_name in self.registeredResets:
-                    self.resetTensor(self.registeredResets[result_name])
-                elif result_name in self.registeredContractions:
-                    operation = "contract"
-                    A,B,summing_pairs, reorder_upper_lower_indices = self.registeredContractions[result_name]
+                if operation_name == 'reset':
+                    A, = args
+                    self.resetTensor(A)
+                elif operation_name == 'contract':
+                    A,B,summing_pairs, reorder_upper_lower_indices = args
                     B_permuter = summing_pairs
-                    td  = _np.tensordot(self.tensorData[A], self.tensorData[B], axes=summing_pairs)
-                    _np.copyto(self.tensorData[result_name], _np.transpose(td, reorder_upper_lower_indices))
+                    td  = _np.tensordot(self[A].data, self[B].data, axes=summing_pairs)
+                    _np.copyto(self[result_name].data, _np.transpose(td, reorder_upper_lower_indices))
                     
-                elif result_name in self.registeredInverses: 
+                elif operation_name == 'pseudoinvert':
                     operation = "invert"
-                    A, side, regularizer = self.registeredInverses[result_name]
+                    A, side, regularizer = args
                     if side == 'left':
-                        ATA = _np.dot(self.tensorDataAsFlattened[A].T,self.tensorDataAsFlattened[A])
+                        ATA = _np.dot(self[A].data_flat.T,self[A].data_flat)
                         ATA = ATA + _np.diag([regularizer]*ATA.shape[0])
                         ATAInv = _np.linalg.inv(ATA)
-                        _np.dot(ATAInv, self.tensorDataAsFlattened[A].T, out=self.tensorDataAsFlattened[result_name])
+                        _np.dot(ATAInv, self[A].data_flat.T, out=self[result_name].data_flat)
                     elif side=='right': #right-sided pseudoinverse
-                        AAT = _np.dot(self.tensorDataAsFlattened[A],self.tensorDataAsFlattened[A].T)
+                        AAT = _np.dot(self[A].data_flat,self[A].data_flat.T)
                         AAT = AAT + _np.diag([regularizer]*AAT.shape[0])
                         AATInv = _np.linalg.inv(AAT)
-                        _np.dot(self.tensorDataAsFlattened[A].T, AATInv, out=self.tensorDataAsFlattened[result_name])
+                        _np.dot(self[A].data_flat.T, AATInv, out=self[result_name].data_flat)
                     else:
                         raise ValueError()
-
-                elif result_name in self.registeredInverses: 
-                    operation = "invert_svd"
-                    A, regularizer = self.registeredInverses[result_name]
-                    inverted = _np.linalg.pinv( self.tensorDataAsFlattened[A], rcond = regularizer) 
-                    inverted.shape = self.tensorShape[result_name]
-                    _np.copyto(  self.tensorData[result_name], inverted) #unfortunately, we cannot specify an out array for the inverse
+                        
+#                elif operation_name == 'inverse': 
+#                    A, regularizer = args
+#                    inverted = _np.linalg.pinv( self[A].data_flat, rcond = regularizer) 
+#                    inverted.shape = self.tensorShape[result_name]
+#                    _np.copyto(  self[result_name].data, inverted) #unfortunately, we cannot specify an out array for the inverse
                     
-                elif result_name in self.registeredTransposes:                
-                    operation = "transpose"
+                elif operation_name == 'transpose':                
                     pass #nothing to do, we're using views for copy-free transpose
                 
-                elif result_name in self.registeredAdditions:             
-                    operation = "add"
-                    A,B, views = self.registeredAdditions[result_name]
-                    _np.add(views[0],views[1], out=self.tensorData[result_name])
+                elif operation_name == 'add': 
+                    A,B, views = args
+                    _np.add(views[0],views[1], out=self[result_name].data)
                 
-                elif result_name in self.registeredSubtractions:                
-                    operation = "subtract"
-                    A,B, B_permuter = self.registeredSubtractions[result_name]
+                elif operation_name == 'subtract':
+                    A,B, B_permuter = args
                     if B_permuter != None:
-                        Bdata = _np.transpose(self.tensorData[B], axes=B_permuter) #precompute would be better, but so we avoid stale references
+                        Bdata = _np.transpose(self[B].data, axes=B_permuter) #precompute would be better, but so we avoid stale references
                     else:
-                        Bdata = self.tensorData[B]
-                    _np.subtract(self.tensorData[A], Bdata, out= self.tensorData[result_name])
+                        Bdata = self[B].data
+                    _np.subtract(self[A].data, Bdata, out= self[result_name].data)
                     
-                elif result_name in self.registeredScalarMultiplications:  
-                    operation = "scalar multiplication"
-                    A,scalar = self.registeredScalarMultiplications[result_name]
+                elif operation_name == 'scalar_multiply':
+                    A,scalar = args
                     if not _np.isreal(scalar):
-                        scalar = self.tensorData[scalar]
-                    _np.multiply(self.tensorData[A], scalar, out=self.tensorData[result_name])   #uses implicit broadcasting for scalar
+                        scalar = self[scalar].data
+                    _np.multiply(self[A].data, scalar, out=self[result_name].data)   #uses implicit broadcasting for scalar
                              
-                elif result_name in self.registeredElementwiseMultiplications:  
-                    operation = "scalar multiplication"
-                    A,B,B_permuter = self.registeredElementwiseMultiplications[result_name]                  
+                elif operation_name == 'elementwise_multiply':
+                    A,B,B_permuter = args                  
                     if B_permuter != None:
-                        Bdata = _np.transpose(self.tensorData[B], axes=B_permuter) #precompute would be better, but so we avoid stale references
+                        Bdata = _np.transpose(self[B].data, axes=B_permuter) #precompute would be better, but so we avoid stale references
                     else:
-                        Bdata = self.tensorData[B]
-                    _np.multiply(self.tensorData[A], Bdata, out=self.tensorData[result_name])            
+                        Bdata = self[B].data
+                    _np.multiply(self[A].data, Bdata, out=self[result_name].data)            
                     
-                elif result_name in self.registeredExternalFunctions:
-                    operation = "function call"
-                    func, in_tensor_names, out_tensor_names = self.registeredExternalFunctions[result_name]
+                elif operation_name == 'external_function':
+                    func, in_tensor_names, out_tensor_names = args
                     func(self, in_tensor_names, out_tensor_names) #call external function with signature func(tns, in_tensor_tuple, out_tensor_tuple)
                     
-                elif result_name in self.registeredMeanOperators:
-                    operation = "mean"
-                    A, dim = self.registeredMeanOperators[result_name]
-                    _np.mean(self.tensorData['A'], axis=dim, out=self.tensorData[result_name], keepdims=False)
+                elif operation_name == 'mean':
+                    A, dim = args
+                    _np.mean(self['A'].data, axis=dim, out=self[result_name].data, keepdims=False)
 
-                elif result_name in self.registeredSliceOperations:
-                    operation = "slice"
+                elif operation_name == 'slice':
                     pass #nothing to do, we're using views for copy-free slice
 
-                elif result_name in self.registeredSumOperations:
-                    operation = "sum"
-                    names, dataviews, sumcoordinates = self.registeredSumOperations[result_name]  
-                    Z = self.tensorData[result_name]
+                elif operation_name == 'sum':
+                    names, dataviews, sumcoordinates = args 
+                    Z = self[result_name].data
                     Z[...]=0.0
                     for dataview in dataviews:
                         if sumcoordinates:
                             Z += _np.sum(dataview)
                         else:                    
                             Z += dataview
-                elif result_name in self.registeredAdditionToSlice:
-                    operation='addition_to_slice'
-                    A,B,viewB, slice_indices = self.registeredAdditionToSlice[result_name]
-                    self.tensorData[A] += viewB
+                elif operation_name == 'add_to_slice':
+                    A,B,viewB, slice_indices = args
+                    self[A].data[...] += viewB
                 else:
-                    operation = "unknown"
-                    raise Warning("tensor {} seems not to be computed by a registered operation".format(result_name))
+                    raise Warning("tensor {} seems not to be computed by a registered operation {}".format(result_name, operation_name))
             except Exception as e:
                 
-                print("Exception when computing {}={}({} , {})".format(result_name,operation,A,B))
+                print("Exception when computing {}={}({} , {})".format(result_name,operation_name,A,B))
                 if A != "":
-                    print("Details for {}: {}   {}".format(A, self.tensorIndices[A], self.tensorData[A].shape))
+                    print("Details for {}: {}   {}".format(A, self[A].index_tuples, self[A].shape))
                 if B != "":
-                    print("Details for {}: {}   {}  {}".format(B, self.tensorIndices[B], self.tensorData[B].shape, B_permuter))
+                    print("Details for {}: {}   {}  {}".format(B, self[B].index_tuples, self[B].shape, B_permuter))
                 if result_name != "":
                         for name in result_name.split(','):
-                            print("Details for {}: {}   {}".format(name, self.tensorIndices[name], self.tensorShape[name]))
+                            print("Details for {}: {}   {}".format(name, self[name].index_tuples, self[name].shape))
                 raise e
-
-    def _getPositionofIndexLabel(self,indexname, label):
-        labels = self.indexValues[indexname]
-        if labels is None:
-            if int(label) == label: #is it an integer? -> then just return it
-                return label
-            else:
-                raise ValueError("Index labels of {} are a subset of (nonnegative) Integers. {} is not an Integer.".format(indexname, label))
-        else:
-            return labels.index(label)
-
 
     def __repr__(self):
         text = "Indices:\n"
-        for index in self.indexSizes:
+        for index in self.index_names:
             if not index.endswith('_'):
-                if self.indexValues[index] is None:
-                    indexValues  =  " (integers)"
+                if self[index].is_ordered_integers:
+                    valuestring  =  " (integers)"
                 else:
-                    indexValues = ": "+",".join(self.indexValues[index])
-                text += "{0}, {0}_: Size {1}{2}\n".format(index, self.indexSizes[index], indexValues)
+                    valuestring = ": "+"{}".format(self[index].values)
+                text += "{0}, {0}_: Size {1}{2}\n".format(index, self[index].size, valuestring)
         text += "\nTensors:\n"
-        for name in self.tensorIndices:
-            text += "{}: {}  /  {}\n".format(name, " ".join(self.tensorIndices[name][0]), " ".join(self.tensorIndices[name][1]))
+        for name in self.tensor_names:
+            text += "{}: {}  /  {}\n".format(name, " ".join(self[name].indices_upper), " ".join(self[name].indices_lower))
         return text
+
+
+    # [] semantics:
+    def __getitem__(self, key):
+        return self._containeritems[key]
+    def __setitem__(self, key, value):
+        self._containeritems[key] = value
+    def __delitem__(self, item):
+        raise NotImplementedError()
+    def keys(self):
+        return self._containeritems.keys()
+
+
     

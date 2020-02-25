@@ -81,7 +81,8 @@ for i in range(30):
         'impulse':  impulses, 
     }
     for name in p.commonnames2rg:
-        if name in ('kp', 'kv'):
+        indices = p.commonnames2rg[name]
+        if len(indices) > 2: #those are gains names
             continue
         r_idx, g_idx = p.commonnames2rg[name]
         observed_values[:,r_idx,g_idx,d_idx] = data[name]

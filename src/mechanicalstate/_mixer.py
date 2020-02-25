@@ -106,7 +106,6 @@ class Mixer(object):
         #wrap up everything into an msd object to hand out:
         self.msd_mixed = _mechanicalstate.MechanicalStateDistribution(self.tns, 'MeanMixed','CovMixed', precisionsName='invCovMixed')
 
-        #_pprint(self.tns.tensorIndices)                    
 
 
     def mix(self,
@@ -123,7 +122,7 @@ class Mixer(object):
         
         activations: matrix of activations, expected shape is self.msd_generators.shape
         
-        phases: matrix of generalized phases, shape is (self.tns.indexSizes['g']) + self.msd_generators.shape
+        phases: matrix of generalized phases, shape is (self.tns['g'].size) + self.msd_generators.shape
         
         
         currentDistribution: MechanicalStateDistribution object
@@ -145,12 +144,13 @@ class Mixer(object):
 
         alpha = [activations[tuple(indices)] for indices  in active_generators_indices_unsorted]
         #save a list of active generators, sorted by activation:
-        active_generators_indices = [tuple(indices) for activation, indices in sorted(zip(alpha, active_generators_indices_unsorted), reverse=True)]
+        ranking = sorted(zip(alpha, active_generators_indices_unsorted), reverse=True, key=lambda pair: pair[0])
+        active_generators_indices = [tuple(indices) for activation, indices in ranking]
         
-        if len(active_generators_indices) > self.tns.indexSizes['slots']: #for now, just degrade loudly
+        if len(active_generators_indices) > self.tns['slots'].size: #for now, just degrade loudly
             warnings.warn("Mixer: more generators than available mixing slots were activated!")
-            active_generators_indices = active_generators_indices[:self.tns.indexSizes['slots']] #ignore the lesser activated generators
-            alpha = alpha[:self.tns.indexSizes['slots']]
+            active_generators_indices = active_generators_indices[:self.tns['slots'].size] #ignore the lesser activated generators
+            alpha = alpha[:self.tns['slots'].size]
 
         if len(active_generators_indices) == 0: #nothing is active! raise error to avoid safety issues
             raise ValueError("Mixer warning: no generator is active!")
@@ -168,10 +168,11 @@ class Mixer(object):
         for slot, indices in enumerate(self.active_generators_indices):
             generatori = msd_generator_array[tuple(indices)]
             phasei = phases[tuple(indices)]
-            msdi = generatori.getDistribution(generalized_phase=phasei, current_msd=current_msd, task_spaces=task_spaces)
+            msdi = generatori.getDistribution(generalized_phase=phasei, msd_current=current_msd, task_spaces=task_spaces)
             self.tns.setTensor(self.tensorNameLists['Mean'][slot], msdi.getMeansData())
             self.tns.setTensor(self.tensorNameLists['Cov'][slot], msdi.getCovariancesData())
-            self.tns.tensorData['alpha'][slot] = alpha[slot]
+            self.tns['alpha'].data[slot] = alpha[slot]
+
 
         #mix:
         self.tns.update(*self._update_order_upto_slot[len(self.active_generators_indices)])

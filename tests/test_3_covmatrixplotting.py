@@ -22,11 +22,11 @@ interpolation_parameters=5
 dofs=7
 p = promep.ProMeP(index_sizes={'dofs': dofs, 'interpolation_parameters':interpolation_parameters, 'realms':realms, 'derivatives':derivatives}, expected_duration=10., name='test1')
 
-if p.tns.tensorIndices['Wcov'] != (('rtilde','gtilde','stilde','dtilde'),('rtilde_','gtilde_','stilde_','dtilde_')): #make sure we have the same notion of index order
+if p.tns['Wcov'].index_tuples != (('rtilde','gtilde','stilde','dtilde'),('rtilde_','gtilde_','stilde_','dtilde_')): #make sure we have the same notion of index order
     raise Exception()
 
-Wcov = p.tns.tensorData['Wcov']
-Wcov_flat = p.tns.tensorDataAsFlattened['Wcov']
+Wcov = p.tns['Wcov'].data
+Wcov_flat = p.tns['Wcov'].data_flat
 
 cov_dofs = _np.linspace(-1,1.0,dofs)[:,None] * _np.linspace(-1,1.0,dofs)[None,:]
 
