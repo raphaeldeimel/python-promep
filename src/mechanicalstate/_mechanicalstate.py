@@ -44,10 +44,14 @@ def _makeMetadataLookuptable(r_max=2, g_max=4):
                        
             #set up translation dict from human-readable names to indices used within the promep data structures:
             names2rg={}
+            names2rglabels={}
             for g_idx in range(g):
                 for r_idx in  range(r):
                     plain_name = metadata['rg_commonnames'][r_idx][g_idx]
+                    r_label = metadata['realm_names'][r_idx]
+                    g_label = g_idx  #is an integer index
                     names2rg[plain_name] = (r_idx,g_idx)
+                    names2rglabels[plain_name] = (r_label, g_label)
 
             #a somewhat elaborate list of gains names for all combinations up to fourth derivative:
             gain_names =  [
@@ -84,6 +88,7 @@ def _makeMetadataLookuptable(r_max=2, g_max=4):
 
 
             metadata['commonnames2rg'] = names2rg
+            metadata['commonnames2rglabels'] = names2rglabels
             namelookup_table[r][g] = metadata
     return namelookup_table
 
@@ -131,6 +136,7 @@ class MechanicalStateDistribution(object):
         self.precisionsName = precisionsName
         metadata = _static_namelookup_table[self.tns['r'].size][self.tns['g'].size]
         self.commonnames2rg = metadata['commonnames2rg']
+        self.commonnames2rglabels = metadata['commonnames2rglabels']
         self.rg_commonnames = metadata['rg_commonnames']        
         self.realm_names = metadata['realm_names']
         self.indexNames = metadata['indexNames']
@@ -147,27 +153,40 @@ class MechanicalStateDistribution(object):
             self._tns_local.cloneIndex('g', 'g2')
             self._tns_local.cloneIndex('d', 'd2')
             self._tns_local.registerTensor('covs', self.tns[self.covariancesName].index_tuples,  external_array=self.tns[self.covariancesName].data, initial_values='keep')
-            self._tns_local.renameIndices('covs', {'g_':'g2', 'd_':'d2'}, inPlace=True)
-            self._tns_local.registerSlice('covs', {'r':'motion', 'r_':'motion'},  result_name='motionmotion')
-            self._tns_local.registerSlice('covs', {'r':'effort', 'r_':'motion'},  result_name='effortmotion')
+            self._tns_local.renameIndices('covs', {'g_':'g2', 'd_':'d2'})
+            self._tns_local.registerSlice('renamed(covs)', {'r':'motion', 'r_':'motion'},  result_name='motionmotion')
+            self._tns_local.registerSlice('renamed(covs)', {'r':'effort', 'r_':'motion'},  result_name='effortmotion')
+#            self._tns_local.renameIndices('motionmotion', {'g_':'g2', 'd_':'d2'})
+#            self._tns_local.renameIndices('effortmotion', {'g_':'g2', 'd_':'d2'})
+
             self._tns_local.registerInverse('motionmotion', side='right', regularization=1e-5)
             self._tns_local.registerContraction('effortmotion', '(motionmotion)^#', result_name='gains_neg', align_result_to=(('g', 'd'),('g_','d_')) )        
             self._tns_local.registerScalarMultiplication('gains_neg', -1.0, result_name = 'gains')
             self._gainsequations = self._tns_local.update_order[:]
 
-            self._tns_local.registerInverse('covs', result_name='precision')
+            self._tns_local.registerInverse('covs', result_name='precision', flip_underlines=False)
             self._precisionequations = ['precision']
+
+            #set up slices to access each mechanical property individually:
+            self._tns_local.registerTensor('means', self.tns[self.meansName])
+            for r_idx, r_label in enumerate(self._tns_local['r'].values):
+                for g_idx, g_label in enumerate(self._tns_local['g'].values):
+                    commonname = self.rg_commonnames[r_idx][g_idx]
+                    self._tns_local.registerSlice('covs', {'r':r_label, 'g':g_label, 'r_': r_label, 'g_': g_label},  result_name="covs_"+commonname)
+                    slicename = self._tns_local.registerSlice('means', {'r':r_label, 'g':g_label},  result_name="means_"+commonname)
 
             self._advancedmethodsUsable = True
         
     def __repr__(self):
-        text  = "Realms: {}\n".format(self.tns['r'].size)
-        text += "Derivatives: {}\n".format(self.tns['g'].size)
+        text  = "Realms: {}, ".format(self.tns['r'].size)
+        text += "Derivatives: {}, ".format(self.tns['g'].size)
         text += "Dofs: {}\n".format(self.tns['d'].size)
-        for g_idx in range(self.tns['g'].size):            
-            mean = self.tns[self.meansName].data[:,g_idx,:]
-            var = self.tns[self.covariancesName].data_diagonal[:,g_idx,:]
-            text += "\nDerivative {}:\n       Means:\n{}\n       Variances:\n{}\n".format(g_idx, mean, var)
+        for r_idx in range(self.tns['r'].size):            
+            for g_idx in range(self.tns['g'].size):            
+                name = self.rg_commonnames[r_idx][g_idx]
+                mean = self.tns[self.meansName].data[r_idx,g_idx,:]
+                var = _np.sqrt(self.tns[self.covariancesName].data_diagonal[r_idx,g_idx,:])
+                text += "{}:\n     Mu: {}\n  Sigma: {}\n".format(name, mean, var)
         return text
     
 
@@ -180,33 +199,45 @@ class MechanicalStateDistribution(object):
         """
         #not very efficient to construct this every time, but it is convenient:
         self._makeAdvancedMethodsUsable()
-        self._tns_local.update(*self._gainsequations)
+        self._tns_local.update(self._gainsequations)
         return self._tns_local['gains'].data
 
 
-    def getPrecisions(self):
+    def getPrecision(self):
         """
         Interface to get a precision tensor even if it was not yet computed
         """                
         if self.precisionsName != None:
-            return self.tns[self.precisionsName].data, self.tns[self.precisionsName].index_tuples
+            return self.tns[self.precisionsName]
         else:
             self._makeAdvancedMethodsUsable()        
-            self._tns_local.update(*self._precisionequations)
-            return self._tns_local['precision'].data, self._tns_local['precision'].index_tuples
+            self._tns_local.update(self._precisionequations)
+            return self._tns_local['precision']
         
 
-    def getMeansData(self):
+    def getMeansData(self, commonname=None):
         """
         return the means in a canonical form ( indicces in r,g,d order)
+        
+        If commonname is specified, return a view on the related subset of means
         """
-        return self.tns._alignDimensions( (('r','g','d'), ()),self.tns[self.meansName].index_tuples,   self.tns[self.meansName].data) 
+        if commonname is None:
+            return self.tns._alignDimensions( (('r','g','d'), ()),self.tns[self.meansName].index_tuples,   self.tns[self.meansName].data) 
+        else:
+            self._makeAdvancedMethodsUsable()
+            return self._tns_local['means_'+commonname].data
 
-    def getCovariancesData(self):
+    def getCovariancesData(self,commonname=None):
         """
         return the covariances in a canonical form ( indicces in r,g,d order)
+
+        If commonname is specified, return a view on the related subset of covariances
         """
-        return self.tns._alignDimensions( (('r','g','d'), ('r_','g_','d_')),self.tns[self.covariancesName].index_tuples,   self.tns[self.covariancesName].data) 
+        if commonname is None:
+            return self.tns._alignDimensions( (('r','g','d'), ('r_','g_','d_')),self.tns[self.covariancesName].index_tuples,   self.tns[self.covariancesName].data) 
+        else:
+            self._makeAdvancedMethodsUsable()
+            return self._tns_local['covs_'+commonname].data
 
     def getVariancesData(self):
         """
@@ -214,6 +245,17 @@ class MechanicalStateDistribution(object):
         """
         return self.tns._alignDimensions( (('r','g','d'), ()), (self.tns[self.covariancesName].indices_upper,()),   self.tns[self.covariancesName].data_diagonal) 
 
+
+    def addVariance(self, commonname, value):
+        """
+        Add the variances of the mentioned name to the given values
+            
+        Mostly useful for initializing distributions, or defining/adding uncorrelated noise    
+        """
+        self._makeAdvancedMethodsUsable()
+        slicedtensor = self._tns_local["covs_"+commonname]
+        slicedtensor.data_diagonal[...] += value
+        
 
     def plotCorrelations(self):
         """

@@ -963,6 +963,32 @@ class TensorNameSpace(object):
             text += "{}: {}  /  {}\n".format(name, " ".join(self[name].indices_upper), " ".join(self[name].indices_lower))
         return text
 
+    def print_equations(self):
+        """
+        Print all registered operations (in update order) as nicely formatted equations
+        
+        Intended for debugging        
+        """
+        width = 10
+        for result_name in self.update_order:
+            width = max(width, len(result_name))            
+        formatstring  ="{:>"+str(width)+"s} = {} ( {} )"
+        s = []
+        for result_name in self.update_order:
+            args = self.registeredOperations[result_name]            
+            operator = args[0]
+            argstrings = []
+            for arg in args[1:]:
+                if arg.__class__ == str:
+                    argstrings.append(arg)
+                elif arg.__class__ == list or arg.__class__ == tuple:
+                    for argelement in arg:
+                        if argelement.__class__ == str:
+                            argstrings.append(argelement)                    
+            s.append(formatstring.format(result_name, operator, ', '.join(argstrings) ) )
+        print_string = "\n".join(s)
+        print(print_string)
+
 
     # [] semantics:
     def __getitem__(self, key):

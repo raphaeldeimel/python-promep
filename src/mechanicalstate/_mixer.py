@@ -22,7 +22,7 @@ class Mixer(object):
     Implements a mixer for mechanical state distributions
     """
 
-    def __init__(self, tns, *, max_active_inputs=5):
+    def __init__(self, tns, *, max_active_inputs=5, emulate_paraschos=False):
         """
         
         tns: a TensorNameSpace object containing the index definitions to use:
@@ -32,6 +32,8 @@ class Mixer(object):
         'd': degrees of freedom index
         
         max_active_inputs: maximum number of generators that can be active at the same time (limits computation time)
+        
+        emulate_paraschos: if true, compute the mixture like it is usually done in ProMP papers
         """
         
         self.active_generators_indices = []
@@ -49,9 +51,18 @@ class Mixer(object):
           'Cov': ["Cov{}".format(i) for i in range(max_active_inputs)],
         }
 
-        self.tns.registerTensor("preconditioner", (('rp', 'gp', 'dp'),('r', 'g','d')))
-        self.tns.registerTranspose("preconditioner", flip_underlines=False)
-        self.tns.registerTensor("alpha", (('slots',),()), initial_values='zeros' )
+        self.tns.registerTensor("invCovMinimum", (('r_', 'g_', 'd_'),('r', 'g','d')))
+        self.tns.setTensorToIdentity('invCovMinimum', 0.001)
+
+        self.tns.registerTensor("MeanScaledSum", (('r_', 'g_', 'd_'),()), initial_values='zeros' )
+        self.tns.registerTensor("invCovMixed", (('r_', 'g_', 'd_'),('r', 'g','d')), initial_values='identity' )
+
+
+        self.tns.registerScalarMultiplication('invCovMixed', 1.0, result_name = 'preconditioner_wrongindices') #use the last computed invCovMixed as preconditioner
+        self.tns.renameIndices('preconditioner_wrongindices', {'r_': 'rp', 'g_': 'gp', 'd_':'dp'}, result_name = 'preconditioner') #use the last computed invCovMixed as preconditioner
+
+
+        self.tns.registerTensor('alpha', (('slots',),()), initial_values='zeros' )
         
         self.tns.registerElementwiseMultiplication('alpha', 'alpha', result_name='alpha_sqaure')
         self.tns.registerSum('alpha', result_name='sumalpha', sumcoordinates=True)
@@ -60,13 +71,9 @@ class Mixer(object):
         self.tns.registerTensor("one", ((),()), initial_values='ones')
         self.tns.registerTensor("I", (('rp', 'gp', 'dp'),('r_', 'g_','d_')), initial_values='identity' )
 
-        self.tns.registerTensor("invCovMixed", (('r_', 'g_', 'd_'),('r', 'g','d')), initial_values='identity' )
-        self.tns.registerTensor("MeanScaledSum", (('r_', 'g_', 'd_'),()), initial_values='zeros' )
         
         #setup all tensors for each distribution input slot:
-        self.tns.registerReset('invCovMixed')
-        self.tns.registerReset('MeanScaledSum')
-        self._update_order_upto_slot = [[]]
+        self._update_order_upto_slot = []
         for slot in range(max_active_inputs):
             self.tns.registerTensor(self.tensorNameLists['Mean'][slot], (('r', 'g', 'd'),()) )
             self.tns.registerTensor(self.tensorNameLists['Cov'][slot], (('r', 'g', 'd'),('r_', 'g_','d_')) )
@@ -80,32 +87,55 @@ class Mixer(object):
             previous = self.tns.registerSubtraction('one', alphai)
             previous = self.tns.registerScalarMultiplication(previous, 'sumalpha')
             lambdai = self.tns.registerScalarMultiplication('I', previous) #Lambda
-
+            
             previous = self.tns.registerAddition(covpreconditioned, lambdai) #regularize
-            previous = self.tns.registerInverse(previous, flip_underlines=False)  #compute precision
+            if emulate_paraschos:  #skip adding the lambdai (decorrelating) term
+                previous = covpreconditioned            
+            previous = self.tns.registerInverse(previous, flip_underlines=False, regularization=1e-8)  #compute precision
 
             previous = self.tns.registerScalarMultiplication(previous, alphai) #scale precision
             invcovweighted = self.tns.registerContraction( 'preconditioner', previous, result_name='invCovWeighted{}'.format(slot)) #de-precondition
             invcovweightedT = self.tns.registerTranspose(invcovweighted, flip_underlines=False)
             
             #scale means by both precision and activation for computing a sum afterwards
-            previous = self.tns.registerTranspose(self.tensorNameLists['Mean'][slot])
-            previous = self.tns.registerContraction(self.tensorNameLists['Mean'][slot], invcovweighted)
-            meansscaled = self.tns.registerScalarMultiplication(previous, alphai)
+            meansscaled = self.tns.registerContraction(self.tensorNameLists['Mean'][slot], invcovweighted, result_name = 'meansscaled{}'.format(slot))
 
-            self.tns.registerAdditionToSlice('invCovMixed',   invcovweighted, slice_indices={})
-            self.tns.registerAdditionToSlice('MeanScaledSum', meansscaled , slice_indices={})
 
             #in order to avoid unnecessary computation, gather all equations we need to recompute up to the current slot:    
-            self._update_order_upto_slot.append(self.tns.update_order.copy() + ['CovMixed', 'MeanMixed'])
+            self._update_order_upto_slot.append(self.tns.update_order.copy())
+            #self._update_order_upto_slot.append(self.tns.update_order.copy() + ['CovMixed_unsym', 'CovMixed_unsym2', '(CovMixed_unsym2)^T','CovMixed', 'MeanMixed'])
+
+            include_everything_after = len(self.tns.update_order)
+
+
+        #aggregate all mixed         
+        self.tns.registerReset('invCovMixed', 'zeros')
+        self.tns.registerReset('MeanScaledSum', 'zeros')
+        #self.tns.registerAdditionToSlice('invCovSum',   'invCovMinimum' , slice_indices={})
+
+        for slot in range(max_active_inputs):
+            a1 = self.tns.registerAdditionToSlice('invCovMixed',   'invCovWeighted{}'.format(slot) , slice_indices={})
+            a2 = self.tns.registerAdditionToSlice('MeanScaledSum', 'meansscaled{}'.format(slot) , slice_indices={})
+            self._update_order_upto_slot[slot] = self._update_order_upto_slot[slot] + self.tns.update_order[include_everything_after:]
+
+        include_everything_after = len(self.tns.update_order)
+
 
         #final computation on the accumulated sums:            
-        self.tns.registerInverse('invCovMixed',result_name='CovMixed', flip_underlines=False)
+        previous = self.tns.registerInverse('invCovMixed', result_name='CovMixed_asym', flip_underlines=False)
+
+        #make sure that covariances is a proper, symmetric matrix:
+        previous = self.tns.registerScalarMultiplication('CovMixed_asym', 0.5)        
+        previousT = self.tns.registerTranspose(previous)
+        self.tns.registerAddition(previous, previousT, result_name = 'CovMixed')
+
         self.tns.registerContraction('CovMixed', 'MeanScaledSum', result_name='MeanMixed')
 
         #wrap up everything into an msd object to hand out:
         self.msd_mixed = _mechanicalstate.MechanicalStateDistribution(self.tns, 'MeanMixed','CovMixed', precisionsName='invCovMixed')
 
+        for slot in range(max_active_inputs):
+            self._update_order_upto_slot[slot] = self._update_order_upto_slot[slot] + self.tns.update_order[include_everything_after:]
 
 
     def mix(self,
@@ -158,24 +188,24 @@ class Mixer(object):
         self.active_generators_indices = active_generators_indices
         self.active_generators_indices_unsorted = active_generators_indices_unsorted
 
-        #Use the precision tensor of the current msd as preconditioner:
-        precision, precision_indices = current_msd.getPrecisions()
-        self.tns.setTensor('preconditioner', precision)
-        
-        self.tns.resetTensor('alpha')
+        self.tns.resetTensor('alpha', 'zeros') #make sure that all unused slot activations are zero - just in case
         #query the msd_generators:
         last_updated_generator = 0
+        self.msds = []
         for slot, indices in enumerate(self.active_generators_indices):
             generatori = msd_generator_array[tuple(indices)]
+            activationi = activations[tuple(indices)]
             phasei = phases[tuple(indices)]
             msdi = generatori.getDistribution(generalized_phase=phasei, msd_current=current_msd, task_spaces=task_spaces)
             self.tns.setTensor(self.tensorNameLists['Mean'][slot], msdi.getMeansData())
             self.tns.setTensor(self.tensorNameLists['Cov'][slot], msdi.getCovariancesData())
-            self.tns['alpha'].data[slot] = alpha[slot]
-
+            self.tns['alpha'].data[slot] = activationi
+            self.msds.append(msdi)
 
         #mix:
-        self.tns.update(*self._update_order_upto_slot[len(self.active_generators_indices)])
+        self.tns.update(self._update_order_upto_slot[len(self.active_generators_indices)-1])
+
+
 
         #the result is accessible via the msd_mixed object:    
         return self.msd_mixed
