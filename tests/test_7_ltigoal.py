@@ -260,6 +260,7 @@ for desired in desiredDicts1:
         msd_expected = ltigoal1.getDistribution(msd_current=msd)
         timeintegrator1.integrate(msd_expected, dt, times)
         meansdata  = timeintegrator1.msd_current.getMeansData()
+        msd = timeintegrator1.msd_current
         plotvalues_y[i,:,:,:] = meansdata
         plotvalues_sigma[i,:,:,:] = _np.sqrt(timeintegrator1.msd_current.getVariancesData()) 
         

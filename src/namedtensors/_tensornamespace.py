@@ -20,6 +20,19 @@ indexDescription = _collections.namedtuple('IndexDescription', 'size values is_o
 tensorDescription = _collections.namedtuple('TensorDescription', 'index_tuples indices_upper indices_lower ndim ndim_upper ndim_lower shape indices_position indices_upper_position indices_lower_position data data_diagonal shape_flat data_flat data_flat_diagonal data_are_external')
 
 
+#Here you can change the dtype for all operations and data. Mostly for testing numeric stability with lesser resolution, or for saving memory
+default_dtype = _np.float64
+
+from scipy.linalg import lapack as _lapack
+if default_dtype == _np.float32:
+    def _inverse(A):
+        return _lapack.spotri(A)[0]  #slower than float64, 40.8us  vs. 27.5us
+else:
+    def _inverse(A):
+        return _np.linalg.inv(A)  #uses dgetri under the hood
+#        return _lapack.dpotri(A)[0]  #twice as fast as _np.linalg.inv: 27.5us for a ^2x2x8_2x2x8 tensor vs. 65us, but not as stable for mixing
+
+
 class TensorNameSpace(object):
     """
     This is kind of a band-aid class to augment current numpy/tensorflow/pytorch versions with 
@@ -56,14 +69,14 @@ class TensorNameSpace(object):
     """
 
     def __init__(self, ntm = None):
-        self.tensorInitialValues = {} #what the value pattern should be on reset/init of a tensor 
         self.registeredOperations = {}
         self._tensordot = _np.tensordot #which library to use
         self.update_order = []
         self._containeritems = {}
         self.index_names = set()
-        self.tensor_names = set()
+        self.tensor_names = []
 
+        self.dtype  = default_dtype
         
         if ntm is not None:
             for name in ntm.index_names:
@@ -149,8 +162,7 @@ class TensorNameSpace(object):
            
         if description.__class__ == tensorDescription: #requested registering of a tensor from another namespace
             self._containeritems[name] = description
-            self.tensor_names.add(name)
-            self.tensorInitialValues[name] = 'keep'
+            self.tensor_names.append(name)
             return
         
         #else: tensor from scratch:
@@ -170,7 +182,7 @@ class TensorNameSpace(object):
         tensor_shape_flattened = (int(_np.prod(tensor_shape[:n_upper])) , int(_np.prod(tensor_shape[n_upper:])))  #int needed because prod converts empty tuples into float 1.0
 
         if external_array is None:
-            dataArray = _np.zeros(tensor_shape)
+            dataArray = _np.zeros(tensor_shape, dtype=self.dtype)
         else:
             if external_array.shape != tensor_shape:
                 raise ValueError(f'{external_array.shape} != {tensor_shape}')
@@ -202,10 +214,9 @@ class TensorNameSpace(object):
         
         desc = tensorDescription(indexTuples, indexTuples[0], indexTuples[1], len(tensor_shape), len(indexTuples[0]), len(indexTuples[1]), tensor_shape, indices_position, index2position_upper, index2position_lower, dataArray, view_diagonal, tensor_shape_flattened, view_flat,  view_flat_diagonal, data_are_external)
         self._containeritems[name] = desc
-        self.tensor_names.add(name)
+        self.tensor_names.append(name)
         
-        self.tensorInitialValues[name] = initial_values
-        self.resetTensor(name)
+        self.resetTensor(name,initial_values)
 
 
     def _compute_index_reverse_lookup(self, indexTuples):
@@ -318,12 +329,12 @@ class TensorNameSpace(object):
         self.update_order.append(result_name)
         return result_name
 
-    def registerReset(self, A):
+    def registerReset(self, A, initial_values='zeros'):
         """
         If executed, it sets coordinates back to the inital values
         """
         result_name = 'reset({})'.format(A)
-        self.registeredOperations[result_name] = ('reset', A)
+        self.registeredOperations[result_name] = ('reset', A, initial_values)
         self.update_order.append(result_name)
         return result_name
 
@@ -430,7 +441,7 @@ class TensorNameSpace(object):
         self.update_order.append(result_name)        
         return result_name
 
-    def registerInverse(self, tensorname, result_name = None, side='left', regularization=1e-9, flip_underlines=True, out_array=None, initial_values_out_array='keep'):
+    def registerInverse(self, tensorname, result_name = None, side='left', regularization=1e-10, flip_underlines=True, out_array=None, initial_values_out_array='keep'):
         """
         register an "inverse" operation: matrix (pseudo-)inverse between all upper and all lower indices
         
@@ -460,7 +471,7 @@ class TensorNameSpace(object):
         return result_name
 
 
-    def registerAdditionToSlice(self, A, B, slice_indices=None):
+    def registerAdditionToSlice(self, A, B, slice_indices={}):
         """
         register an addition operation
         
@@ -661,11 +672,10 @@ class TensorNameSpace(object):
         return view, indices
         
 
-    def resetTensor(self, name):
+    def resetTensor(self, name, initial_values):
         """
         Set the tensor data to its initial value pattern
         """
-        initial_values = self.tensorInitialValues[name]
         if initial_values == 'zeros':
             self.setTensor(name, 0.0)
         elif initial_values == 'keep':
@@ -853,8 +863,8 @@ class TensorNameSpace(object):
             args  = self.registeredOperations[result_name][1:]
             try:
                 if operation_name == 'reset':
-                    A, = args
-                    self.resetTensor(A)
+                    A,initial_values = args
+                    self.resetTensor(A, initial_values)
                 elif operation_name == 'contract':
                     A,B,summing_pairs, reorder_upper_lower_indices = args
                     B_permuter = summing_pairs
@@ -867,7 +877,9 @@ class TensorNameSpace(object):
                     if side == 'left':
                         ATA = _np.dot(self[A].data_flat.T,self[A].data_flat)
                         ATA = ATA + _np.diag([regularizer]*ATA.shape[0])
-                        ATAInv = _np.linalg.inv(ATA)
+                        ATAInv = _inverse(ATA)  #float32 cholesky decomposition based inverse
+#                        ATAInv = _np.linalg.inv(ATA)
+#                        print(ATAInv, self[A].data_flat.T.dtype,self[result_name].data_flat.dtype )
                         _np.dot(ATAInv, self[A].data_flat.T, out=self[result_name].data_flat)
                     elif side=='right': #right-sided pseudoinverse
                         AAT = _np.dot(self[A].data_flat,self[A].data_flat.T)
@@ -981,6 +993,8 @@ class TensorNameSpace(object):
             for arg in args[1:]:
                 if arg.__class__ == str:
                     argstrings.append(arg)
+                elif _np.isscalar(arg):
+                    argstrings.append(arg.__repr__())                    
                 elif arg.__class__ == list or arg.__class__ == tuple:
                     for argelement in arg:
                         if argelement.__class__ == str:

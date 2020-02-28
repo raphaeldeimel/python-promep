@@ -20,6 +20,7 @@ import namedtensors
 import mechanicalstate
 import staticprimitives
 
+from promep import _kumaraswamy
 
 #make a tensor namespace that hold the right index definitions:
 tns_global = mechanicalstate.makeTensorNameSpaceForMechanicalStateDistributions(r=2, g=2, d=1)
@@ -46,16 +47,17 @@ ltigoalB = staticprimitives.LTIGoal(mixerDefault.tns, Kv=None, name="state_B")
 mixer = mechanicalstate.Mixer(tns_global)
 
 #create two lti goal distribution generators:
-ltigoal1 = staticprimitives.LTIGoal(tns_global, Kp=150.0, Kd=10.5, name="positiongoal1", expected_torque_noise=1.1)
-ltigoal1.setDesired(position=_np.array([[1.5]]))
+ltigoal1 = staticprimitives.LTIGoal(tns_global, Kp=250.0, Kd=10, name="positiongoal1", expected_torque_noise=0.1)
+ltigoal1.setDesired(position=_np.array([[0.5]]))
 
-ltigoal2 = staticprimitives.LTIGoal(tns_global, Kp=250.0, Kd=10.5, Kv=0.0, name="positiongoal2", expected_torque_noise=1.1)
+#ltigoal2 = staticprimitives.LTIGoal(tns_global, Kp=250.0, Kd=-15.5, Kv=0.0, name="positiongoal2", expected_torque_noise=1.1)
+ltigoal2 = staticprimitives.LTIGoal(tns_global, Kp=260.0, Kd=15, Kv=0.0, name="positiongoal2", expected_torque_noise=1.01)
 ltigoal2.setDesired(position=_np.array([[-0.5]]))
 
-ltigoal3 = staticprimitives.LTIGoal(tns_global, Kp=0.0, Kd=0, Kv=10.0, name="velocitygoal", expected_torque_noise=10.1)
-ltigoal3.setDesired(position=_np.array([[-0.0]]), velocity=_np.array([[0.7345]]))
+ltigoal3 = staticprimitives.LTIGoal(tns_global, Kp=0.0, Kd=0, Kv=10.0, name="velocitygoal", expected_torque_noise=1.01)
+ltigoal3.setDesired(position=_np.array([[-0.0]]), velocity=_np.array([[0.4345]]))
 
-ltigoal4 = staticprimitives.LTIGoal(tns_global, Kp=0.0, Kd=10.0, Kv=0.0, name="float", expected_torque_noise=0.1)
+ltigoal4 = staticprimitives.LTIGoal(tns_global, Kp=0.0, Kd=0.0, Kv=0.0, name="float", expected_torque_noise=1.01)
 
 
 msd_current.covariances.data[...] = 10. * msd_current.covariances.data
@@ -68,7 +70,7 @@ task_space = None
 
 
 dofs=1
-dt = 0.05
+dt = 0.01
 times =1
 plotvalues_x = _np.arange(0, 10.0, dt*times)
 num = plotvalues_x.size 
@@ -79,36 +81,46 @@ msd_current = msd_current
 plotvalues_activation = _np.zeros((num, 2,2))
 plotvalues_sumalpha = _np.zeros((num, 2))
 
-for g0, g1, emulate_paraschos in (ltigoal1, ltigoal2, False),(ltigoal2, ltigoal3, False),(ltigoal1, ltigoal4, False),(ltigoal3, ltigoal4, False):
+activation00 = _kumaraswamy.cdf(1.6, 1.8, 0.5+signal.sawtooth(_np.linspace(0, 13. , num), 0.5))
+activation11 = _kumaraswamy.cdf(1.6, 1.8, 0.5+signal.sawtooth(_np.linspace(2.95, 18. , num), 0.5))
+
+plotvalues_y_mixed = _np.zeros((num, 2, 2))
+plotvalues_generators =_np.zeros((num,2, 2, 2))
+plotvalues_generators[...] = _np.nan
+
+for g0, g1, emulate_paraschos in (ltigoal1, ltigoal2, False),(ltigoal2, ltigoal3, False),(ltigoal1, ltigoal4, False),(ltigoal3, ltigoal4, False), (ltigoal1, ltigoal2, True):
 
     msd_generator_array = _np.array([[g0, None], [None, g1]])
-    timeintegrator = mechanicalstate.TimeIntegrator(tns_global, noiseFloorSigmaTorque=1e-2, noiseFloorSigmaPosition=1e-2, noiseFloorSigmaVelocity=1e-2)
+    timeintegrator = mechanicalstate.TimeIntegrator(tns_global, noiseFloorSigmaTorque=0.0, noiseFloorSigmaPosition=0.0, noiseFloorSigmaVelocity=0.0)
     mixer = mechanicalstate.Mixer(tns_global, emulate_paraschos=emulate_paraschos)
     timeintegrator.tns.setTensor('CurrentMean', 0.0)
     timeintegrator.tns.setTensorToIdentity('CurrentCov', scale=0.1**2)
     for i in range(num):
         
-        activations[1,1] = _np.clip(0.5+signal.sawtooth(13.*i/num, 0.5), 0.0, 1.0)
-        activations[0,0] = _np.clip(0.5+signal.sawtooth(2.95+15 *i/num, 0.5), 0.0, 1.0)
-        #activations[1,1] = 0.5
-        #activations[0,0] = 0.5
+        activations[0,0] = activation00[i]
+        activations[1,1] = activation11[i]
         if _np.all(activations < 0.011):
             activations[0,0] = 0.011
             
         plotvalues_activation[i,:,:] = activations
         
+        
+        
         mixer.mix(msd_generator_array, activations, phases, timeintegrator.msd_current)
         timeintegrator.integrate(mixer.msd_mixed, dt, times)
-        msd = timeintegrator.msd_current
-#        msd = mixer.msd_mixed
-    #    msd = mixer.msds[0]
-        
-        plotvalues_y[i,:,:] = msd.getMeansData()[:,:,0]
-        covariances = msd.getVariancesData()
+
+
+        plotvalues_y[i,:,:] = timeintegrator.msd_current.getMeansData()[:,:,0]
+        covariances = timeintegrator.msd_current.getVariancesData()
         plotvalues_y_sigma[i,:,:] = _np.sqrt(covariances[:,:,0])
         
+        plotvalues_y_mixed[i,:,:] = mixer.msd_mixed.getMeansData()[:,:,0]
+
+        for k, msd_gen in enumerate(mixer.msds):
+            plotvalues_generators[i,k,:,:] = msd_gen.getMeansData()[:,:,0]
+        
         asymmetry = _np.sqrt(_np.max((mixer.msd_mixed.covariances.data_flat - mixer.msd_mixed.covariances.data_flat.T)**2))
-        if asymmetry > 1e-7:
+        if asymmetry > 1e-4:
             print("mixed covariance matrix is asymmetric!: {}".format(asymmetry))
 
         plotvalues_sumalpha[i,0] = mixer.tns['sumalpha'].data
@@ -120,10 +132,10 @@ for g0, g1, emulate_paraschos in (ltigoal1, ltigoal2, False),(ltigoal2, ltigoal3
 
     fig, axes  = plt.subplots(5,1, figsize=(6,6), sharex='all', sharey='row')
     axes[0].set_ylim(0.0, 2.0)
-    axes[1].set_ylim(-4.0, 4.0)
-    axes[2].set_ylim(-20.0, 20.0)
-    axes[3].set_ylim(-100.0, 100.0)
-    axes[4].set_ylim(-20.0, 100.0)    
+    #axes[1].set_ylim(-1.0, 2.0)
+    #axes[2].set_ylim(-3.0, 3.0)
+    #axes[3].set_ylim(-100.0, 100.0)
+    #axes[4].set_ylim(-20.0, 100.0)    
     if emulate_paraschos:
         fig.suptitle("crossover_paraschos")
     else:
@@ -136,6 +148,7 @@ for g0, g1, emulate_paraschos in (ltigoal1, ltigoal2, False),(ltigoal2, ltigoal3
     axes[0].legend()
     axes[1].set_title('position')
     axes[1].plot(plotvalues_x, plotvalues_y[:,0,0])
+    axes[1].plot(plotvalues_x, plotvalues_y_mixed[:,0,0], color='c')
     axes[1].axhline(g0.msd_desired.means.data[0,0,0], linestyle=':')
     axes[1].axhline(g1.msd_desired.means.data[0,0,0], linestyle=':')
     axes[1].fill_between(plotvalues_x, plotvalues_y[:,0,0]-1.95*plotvalues_y_sigma[:,0,0], plotvalues_y[:,0,0]+1.95*plotvalues_y_sigma[:,0,0], label="95%",  color=(0.8,0.8,0.8))
@@ -143,6 +156,8 @@ for g0, g1, emulate_paraschos in (ltigoal1, ltigoal2, False),(ltigoal2, ltigoal3
 
     axes[2].set_title('velocity')
     axes[2].plot(plotvalues_x, plotvalues_y[:,0,1])
+    axes[2].plot(plotvalues_x[1:], (plotvalues_y[1:,0,0]-plotvalues_y[:-1,0,0])/dt)
+    axes[2].plot(plotvalues_x, plotvalues_y_mixed[:,0,1], color='c')
     axes[2].fill_between(plotvalues_x, plotvalues_y[:,0,1]-1.95*plotvalues_y_sigma[:,0,1], plotvalues_y[:,0,1]+1.95*plotvalues_y_sigma[:,0,1], label="95%",  color=(0.8,0.8,0.8))
 
     axes[3].set_title('torque')

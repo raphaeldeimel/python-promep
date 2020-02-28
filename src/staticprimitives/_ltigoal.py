@@ -33,7 +33,7 @@ class LTIGoal(object):
     
     """
 
-    def __init__(self, tensornamespace, * , current_msd_from=None, task_space='jointspace', name='unnamed', **kwargs):
+    def __init__(self, tensornamespace, * , current_msd_from=None, task_space='jointspace', name='unnamed', expected_torque_noise=0.123, **kwargs):
 
         self.name = name
         self.phaseAssociable = False #indicate that this motion generator is not parameterized by phase
@@ -54,11 +54,16 @@ class LTIGoal(object):
             
         #desired values:
         self.tns.registerTensor('DesiredMean', (('r','g','d'),()) )
-        self.tns.registerTensor('DesiredCov', (('r','g','d'),('r_', 'g_', 'd_')) )
+        self.tns.registerTensor('DesiredCov', (('r','g','d'),('r_', 'g_', 'd_')))
         self.msd_desired = _mechanicalstate.MechanicalStateDistribution(self.tns, "DesiredMean", "DesiredCov")
         
+        #initialize the desired torque variance to some non-zero value:        
+        self.tns.setTensorToIdentity('DesiredCov', scale=1e-6)
+        self.msd_desired.addVariance('torque', expected_torque_noise**2)
+#        self.msd_desired.addVariance('impulse', expected_torque_noise**2)
 
         self.commonnames2rg = self.msd_desired.commonnames2rg #we use them a lot here, so remember a shorthand
+        self.commonnames2rglabels = self.msd_desired.commonnames2rglabels
 
         if current_msd_from is None: #local copy
             self.tns.registerTensor('CurrentMean', (('r','g','d'),()) )
@@ -72,19 +77,19 @@ class LTIGoal(object):
 
 
 
-        r_torque, g_torque = self.commonnames2rg['torque']
-        r_pos, g_pos = self.commonnames2rg['position']  
-        self.tns.registerBasisTensor('e_ktau',  (('r2', 'g2'),('r', 'g')), (('effort', g_torque),('effort', g_torque)) )
+        rlabel_torque, glabel_torque = self.commonnames2rglabels['torque']
+        rlabel_pos, glabel_pos = self.commonnames2rglabels['position']
+        self.tns.registerBasisTensor('e_ktau',  (('r2', 'g2'),('r', 'g')), ((rlabel_torque, glabel_torque),(rlabel_torque, glabel_torque)) )
         self.tns.registerTensor('Uktau',  (('d2',),('d',)), initial_values='identity')
-        self.tns.registerBasisTensor('e_kp',  (('r2', 'g2'),('r', 'g')), (('effort', g_torque),('motion', g_pos)))
+        self.tns.registerBasisTensor('e_kp',  (('r2', 'g2'),('r', 'g')), ((rlabel_torque, glabel_torque),(rlabel_pos, glabel_pos)))
         self.tns.registerTensor('Kp', (('d2',),('d',)) )
         
         
         slice_tau = self.tns.registerContraction('e_ktau', 'Uktau')
         slice_kp = self.tns.registerContraction('e_kp', 'Kp')
         if 'velocity' in self.commonnames2rg:
-            r_vel, g_vel = self.commonnames2rg['velocity']  
-            self.tns.registerBasisTensor('e_kv',  (('r2', 'g2'),('r', 'g')), (('effort', g_torque),('motion', g_vel)))
+            rlabel_vel, glabel_vel = self.commonnames2rglabels['velocity']
+            self.tns.registerBasisTensor('e_kv',  (('r2', 'g2'),('r', 'g')), ((rlabel_torque, glabel_torque),(rlabel_vel, glabel_vel)))
             self.tns.registerTensor('Kv', (('d2',),('d',)) )
             slice_kv = self.tns.registerContraction('e_kv', 'Kv' )
 
@@ -99,9 +104,9 @@ class LTIGoal(object):
             #Compute the K tensor: 
             self.tns.registerTensor('Kd', (('d2',),('d',)) )  #kd is equal to kv but with goal velocity=0  -> only appears here and not in the computation of 'U'
             slice_kd = self.tns.registerContraction('e_kv', 'Kd') 
-            U_plus_damping = self.tns.registerAddition(slice_kd, 'U')
+            U_minus_damping = self.tns.registerAddition('U',slice_kd)
             
-            self.tns.registerSubtraction('I', U_plus_damping, result_name='K')
+            self.tns.registerSubtraction('I', U_minus_damping, result_name='K')
         else:
             self.tns.registerSubtraction('I', 'U', result_name = 'K')
 
@@ -114,7 +119,9 @@ class LTIGoal(object):
         term_meanU = self.tns.registerContraction('U', 'DesiredMean')
         
         #influence of desired cov on expected cov:
-        previous = self.tns.registerContraction('U', 'DesiredCov')
+        previous = 'DesiredCov'
+#        previous = self.tns.registerAddition('DesiredCov','CurrentCov')
+        previous = self.tns.registerContraction('U', previous)
         term_covU = self.tns.registerContraction(previous, '(U)^T')
 
         #up to here we can precompute the equations if goals don't change

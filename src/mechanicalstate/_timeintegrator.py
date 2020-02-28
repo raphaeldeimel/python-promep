@@ -19,7 +19,7 @@ from . import _mechanicalstate
 
 class TimeIntegrator(object):
 
-    def __init__(self, tensornamespace, noiseFloorSigmaTorque=0.1, noiseFloorSigmaPosition=0.1, noiseFloorSigmaVelocity=0.1, dynamicsModel = None, accumulateQuantizationErrors=False):
+    def __init__(self, tensornamespace, noiseFloorSigmaTorque=0.1, noiseFloorSigmaPosition=0.1, noiseFloorSigmaVelocity=0.1, noiseFloorSigmaImpulse=0.1, dynamicsModel = None, accumulateQuantizationErrors=False):
         """
         
         dynamicsModel: object that provides a getInertiaMatrix(position) method to query the inertia matrix of the system to integrate
@@ -81,7 +81,7 @@ class TimeIntegrator(object):
         self.tns['noiseFloorCov'].data[0,0,:,0,0,:] = noiseFloorSigmaPosition**2
         self.tns['noiseFloorCov'].data[0,1,:,0,1,:] = noiseFloorSigmaVelocity**2
         self.tns['noiseFloorCov'].data[1,1,:,1,1,:] = noiseFloorSigmaTorque**2
-#        self.tns['noiseFloorCov'].data[1,0,:,1,0,:] = noiseFloorSigmaImpulse**2
+        self.tns['noiseFloorCov'].data[1,0,:,1,0,:] = noiseFloorSigmaImpulse**2
         
 #        self.tns.registerAddition('LastCov', 'noiseFloorCov', result_name='LastCov_plantnoise') 
         
@@ -242,8 +242,11 @@ class TimeIntegrator(object):
 
             
             """
-            #copy the current data into the local tensors:
-            self.tns.setTensor('LastMean',  mStateDistribution.means)
+
+            #simulate the effect of running a torque controller: 
+            self.tns.setTensor('LastMean',self.tns['CurrentMean'])
+            self.tns['LastMean'].data[1,1,:] = mStateDistribution.means.data[1,1,:]
+#            self.tns.setTensor('LastMean',  mStateDistribution.means)
             self.tns.setTensor('LastCov',  mStateDistribution.covariances)
 
             if times < 1:
@@ -272,12 +275,15 @@ class TimeIntegrator(object):
                 self.tns.setTensor('LastCov', self.tns['CurrentCov'].data)
                 self.tns.update(self._equations_A_unchanged)
           
+          
             #make sure that we don't drop covariances to unreasonable precision:
             self.tns['CurrentCov'].data_diagonal[...] = _np.maximum(self.tns['CurrentCov'].data_diagonal[...], self.tns['noiseFloorCov'].data_diagonal[...])
+            self.tns['CurrentCov'].data_diagonal[...] +=  self.tns['noiseFloorCov'].data_diagonal[...]
           
             if _np.any(self.tns['CurrentCov'].data > 1e10):
                 raise RuntimeWarning("TimeIntegrator: covariance matrix exploded: It has elements > 1e10!")
-            
+
+           
             return self.msd_current
 
 
@@ -289,7 +295,7 @@ class FakeDynamicsModel():
     """
     def __init__(self, dofs):
         self.L = _np.eye(dofs)
-        self.viscuousFriction = _np.ones((dofs))
+        self.viscuousFriction = 0.*_np.ones((dofs))
         
     def update(self, position, velocity=None, acceleration=None):
         self.position = position

@@ -91,7 +91,7 @@ class Mixer(object):
             previous = self.tns.registerAddition(covpreconditioned, lambdai) #regularize
             if emulate_paraschos:  #skip adding the lambdai (decorrelating) term
                 previous = covpreconditioned            
-            previous = self.tns.registerInverse(previous, flip_underlines=False, regularization=1e-8)  #compute precision
+            previous = self.tns.registerInverse(previous, flip_underlines=False)  #compute precision
 
             previous = self.tns.registerScalarMultiplication(previous, alphai) #scale precision
             invcovweighted = self.tns.registerContraction( 'preconditioner', previous, result_name='invCovWeighted{}'.format(slot)) #de-precondition
@@ -122,12 +122,7 @@ class Mixer(object):
 
 
         #final computation on the accumulated sums:            
-        previous = self.tns.registerInverse('invCovMixed', result_name='CovMixed_asym', flip_underlines=False)
-
-        #make sure that covariances is a proper, symmetric matrix:
-        previous = self.tns.registerScalarMultiplication('CovMixed_asym', 0.5)        
-        previousT = self.tns.registerTranspose(previous)
-        self.tns.registerAddition(previous, previousT, result_name = 'CovMixed')
+        previous = self.tns.registerInverse('invCovMixed', result_name='CovMixed', flip_underlines=False)
 
         self.tns.registerContraction('CovMixed', 'MeanScaledSum', result_name='MeanMixed')
 
@@ -199,7 +194,7 @@ class Mixer(object):
             msdi = generatori.getDistribution(generalized_phase=phasei, msd_current=current_msd, task_spaces=task_spaces)
             self.tns.setTensor(self.tensorNameLists['Mean'][slot], msdi.getMeansData())
             self.tns.setTensor(self.tensorNameLists['Cov'][slot], msdi.getCovariancesData())
-            self.tns['alpha'].data[slot] = activationi
+            self.tns['alpha'].data[slot] = activationi-0.01
             self.msds.append(msdi)
 
         #mix:
