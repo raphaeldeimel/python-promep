@@ -244,9 +244,11 @@ class TimeIntegrator(object):
             """
 
             #simulate the effect of running a torque controller: 
-            self.tns.setTensor('LastMean',self.tns['CurrentMean'])
-            self.tns['LastMean'].data[1,1,:] = mStateDistribution.means.data[1,1,:]
-#            self.tns.setTensor('LastMean',  mStateDistribution.means)
+#            self.tns.setTensor('LastMean',self.tns['CurrentMean'])
+#            self.tns['LastMean'].data[1,1,:] = mStateDistribution.means.data[1,1,:]
+
+            self.tns.setTensor('LastMean',  mStateDistribution.means)
+
             self.tns.setTensor('LastCov',  mStateDistribution.covariances)
 
             if times < 1:
