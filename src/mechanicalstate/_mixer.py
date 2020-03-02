@@ -22,7 +22,7 @@ class Mixer(object):
     Implements a mixer for mechanical state distributions
     """
 
-    def __init__(self, tns, *, max_active_inputs=5, emulate_paraschos=False):
+    def __init__(self, tns, *, max_active_inputs=5, force_product_of_distributions=False, force_no_preconditioner=False):
         """
         
         tns: a TensorNameSpace object containing the index definitions to use:
@@ -33,7 +33,12 @@ class Mixer(object):
         
         max_active_inputs: maximum number of generators that can be active at the same time (limits computation time)
         
-        emulate_paraschos: if true, compute the mixture like it is usually done in ProMP papers
+
+        The following two arguments should not be set, unless you want to demonstrate degraded performance:
+        
+        force_product_of_distributions: if true, compute the mixture like it is usually done in ProMP papers
+        force_no_preconditioner: Force the preconditioner matrix to be the identity
+        
         """
         
         self.active_generators_indices = []
@@ -55,11 +60,14 @@ class Mixer(object):
         self.tns.setTensorToIdentity('invCovMinimum', 0.001)
 
         self.tns.registerTensor("MeanScaledSum", (('r_', 'g_', 'd_'),()), initial_values='zeros' )
-        self.tns.registerTensor("invCovMixed", (('r_', 'g_', 'd_'),('r', 'g','d')), initial_values='identity' )
+        self.tns.registerTensor("invCovMixed", (('r_', 'g_', 'd_'),('r', 'g','d')), initial_values='identity' ) #inverse of mixed covariance of last iteration
 
 
         self.tns.registerScalarMultiplication('invCovMixed', 1.0, result_name = 'preconditioner_wrongindices') #use the last computed invCovMixed as preconditioner
         self.tns.renameIndices('preconditioner_wrongindices', {'r_': 'rp', 'g_': 'gp', 'd_':'dp'}, result_name = 'preconditioner') #use the last computed invCovMixed as preconditioner
+        
+        if force_product_of_distributions:
+            self.tns.registerReset('preconditioner', 'identity') #precondition covariance tensor
 
 
         self.tns.registerTensor('alpha', (('slots',),()), initial_values='zeros' )
@@ -89,7 +97,7 @@ class Mixer(object):
             lambdai = self.tns.registerScalarMultiplication('I', previous) #Lambda
             
             previous = self.tns.registerAddition(covpreconditioned, lambdai) #regularize
-            if emulate_paraschos:  #skip adding the lambdai (decorrelating) term
+            if force_product_of_distributions:  #skip adding the lambdai (decorrelating) term
                 previous = covpreconditioned            
             previous = self.tns.registerInverse(previous, flip_underlines=False)  #compute precision
 

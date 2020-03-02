@@ -88,11 +88,12 @@ plotvalues_y_mixed = _np.zeros((num, 2, 2))
 plotvalues_generators =_np.zeros((num,2, 2, 2))
 plotvalues_generators[...] = _np.nan
 
-for g0, g1, emulate_paraschos in (ltigoal1, ltigoal2, False),(ltigoal2, ltigoal3, False),(ltigoal1, ltigoal4, False),(ltigoal3, ltigoal4, False), (ltigoal1, ltigoal2, True):
+for  force_product_of_distributions, force_no_preconditioner in (True, True),(False, False):
+  for g0, g1 in (ltigoal1, ltigoal2),(ltigoal2, ltigoal3),(ltigoal1, ltigoal4),(ltigoal3, ltigoal4), (ltigoal1, ltigoal2):
 
     msd_generator_array = _np.array([[g0, None], [None, g1]])
     timeintegrator = mechanicalstate.TimeIntegrator(tns_global, noiseFloorSigmaTorque=0.0, noiseFloorSigmaPosition=0.0, noiseFloorSigmaVelocity=0.0)
-    mixer = mechanicalstate.Mixer(tns_global, emulate_paraschos=emulate_paraschos)
+    mixer = mechanicalstate.Mixer(tns_global, force_product_of_distributions=force_product_of_distributions, force_no_preconditioner=force_no_preconditioner )
     timeintegrator.tns.setTensor('CurrentMean', 0.0)
     timeintegrator.tns.setTensorToIdentity('CurrentCov', scale=0.1**2)
     for i in range(num):
@@ -119,8 +120,9 @@ for g0, g1, emulate_paraschos in (ltigoal1, ltigoal2, False),(ltigoal2, ltigoal3
         for k, msd_gen in enumerate(mixer.msds):
             plotvalues_generators[i,k,:,:] = msd_gen.getMeansData()[:,:,0]
         
-        asymmetry = _np.sqrt(_np.max((mixer.msd_mixed.covariances.data_flat - mixer.msd_mixed.covariances.data_flat.T)**2))
-        if asymmetry > 1e-4:
+        #check for a sheared matrix (probably due to numerical issues)
+        asymmetry = _np.sqrt(_np.max((mixer.msd_mixed.covariances.data_flat - mixer.msd_mixed.covariances.data_flat.T)**2 /  _np.sqrt(mixer.msd_mixed.covariances.data_flat_diagonal[None, :]*mixer.msd_mixed.covariances.data_flat_diagonal[:,None])))
+        if asymmetry > 1e-2:
             print("mixed covariance matrix is asymmetric!: {}".format(asymmetry))
 
         plotvalues_sumalpha[i,0] = mixer.tns['sumalpha'].data
@@ -136,15 +138,15 @@ for g0, g1, emulate_paraschos in (ltigoal1, ltigoal2, False),(ltigoal2, ltigoal3
     #axes[2].set_ylim(-3.0, 3.0)
     #axes[3].set_ylim(-100.0, 100.0)
     #axes[4].set_ylim(-20.0, 100.0)    
-    if emulate_paraschos:
-        fig.suptitle("crossover_paraschos")
+    if force_product_of_distributions:
+        fig.suptitle("crossover_{}_{}_pod_no_preconditioning".format(g0.name, g1.name))
     else:
-        fig.suptitle("crossover")
+        fig.suptitle("crossover_{}_{}".format(g0.name, g1.name))
     axes[0].set_title('activations')
     axes[0].plot(plotvalues_x, plotvalues_activation[:,0,0], label=g0.name)
     axes[0].plot(plotvalues_x, plotvalues_activation[:,1,1], label=g1.name)
     axes[0].plot(plotvalues_x, plotvalues_sumalpha[:,0], color='b', linestyle=':', label='L1')
-    axes[0].plot(plotvalues_x, plotvalues_sumalpha[:,1], color='k', linestyle=(0, (1, 10)), label='L2' )
+    axes[0].plot(plotvalues_x, plotvalues_sumalpha[:,1], color='k', linestyle=(0, (1, 10)), label='$L2^2$' )
     axes[0].legend()
     axes[1].set_title('position')
     axes[1].plot(plotvalues_x, plotvalues_y[:,0,0])
