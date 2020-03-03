@@ -33,7 +33,7 @@ class LTIGoal(object):
     
     """
 
-    def __init__(self, tensornamespace, * , current_msd_from=None, task_space='jointspace', name='unnamed', expected_torque_noise=0.123, **kwargs):
+    def __init__(self, tensornamespace, current_msd_from=None, task_space='jointspace', name='unnamed', expected_torque_noise=0.123, **kwargs):
 
         self.name = name
         self.phaseAssociable = False #indicate that this motion generator is not parameterized by phase
@@ -203,7 +203,7 @@ class LTIGoal(object):
             
 
 
-    def getDistribution(self, *, msd_current=None, task_spaces=None, **kwargs):
+    def getDistribution(self, msd_current=None, task_spaces=None, **kwargs):
         """
             return an expected mechanicalstate distribution 
             constructed from the current msd and the lti goals

@@ -358,7 +358,7 @@ meansMatrix
 
 
 
-    def getDistribution(self, * , generalized_phase=None, current_msd=None, task_spaces={}):
+    def getDistribution(self, generalized_phase=None, current_msd=None, task_spaces={}):
         """
         return the distribution of the (possibly multidimensional) state at the given phase
            for now, it returns the parameters (means, derivatives) of a univariate gaussian

@@ -185,7 +185,7 @@ class TensorNameSpace(object):
             dataArray = _np.zeros(tensor_shape, dtype=self.dtype)
         else:
             if external_array.shape != tensor_shape:
-                raise ValueError(f'{external_array.shape} != {tensor_shape}')
+                raise ValueError('{}!={}'.format(external_array.shape, tensor_shape))
             dataArray = external_array  #set a reference to an external data
         
         try:
@@ -497,7 +497,7 @@ class TensorNameSpace(object):
         self.update_order.append(result_name)        
         return result_name        
 
-    def registerAddition(self, A, B, result_name=None,*, out_array=None, initial_values_out_array='keep', flip_underlines=False, align_result_to=None, accumulate=False):
+    def registerAddition(self, A, B, result_name=None, out_array=None, initial_values_out_array='keep', flip_underlines=False, align_result_to=None, accumulate=False):
         """
         register an addition operation
         
@@ -541,7 +541,7 @@ class TensorNameSpace(object):
         self.update_order.append(result_name)        
         return result_name        
 
-    def registerSubtraction(self, A, B, *, result_name=None, out_array=None, flip_underlines=False, initial_values_out_array='keep'):
+    def registerSubtraction(self, A, B, result_name=None, out_array=None, flip_underlines=False, initial_values_out_array='keep'):
         """
         register a subtraction operation (A-B)
         """
@@ -578,7 +578,7 @@ class TensorNameSpace(object):
         self.update_order.append(result_name)
         return result_name
 
-    def registerMean(self, A, index_to_sum, *, result_name=None, out_array=None, initial_values_out_array='keep'):
+    def registerMean(self, A, index_to_sum, result_name=None, out_array=None, initial_values_out_array='keep'):
         """
         computes 1^i:A^i * (1^i:(1^i)^T), i.e. the mean across the mentioned index
         """
@@ -618,7 +618,7 @@ class TensorNameSpace(object):
         return result_name
 
 
-    def registerSum(self, *args, result_name=None, sumcoordinates=False, out_array=None, initial_values_out_array='keep'):
+    def registerSum(self, result_name=None, sumcoordinates=False, out_array=None, initial_values_out_array='keep',*args):
         """
         sum multiple tensors into a single tensor
         

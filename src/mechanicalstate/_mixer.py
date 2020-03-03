@@ -22,7 +22,7 @@ class Mixer(object):
     Implements a mixer for mechanical state distributions
     """
 
-    def __init__(self, tns, *, max_active_inputs=5, force_product_of_distributions=False, force_no_preconditioner=False):
+    def __init__(self, tns, max_active_inputs=5, force_product_of_distributions=False, force_no_preconditioner=False):
         """
         
         tns: a TensorNameSpace object containing the index definitions to use:

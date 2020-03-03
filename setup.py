@@ -2,11 +2,14 @@
 
 from distutils.core import setup
 
+packages=['promep', 'mechanicalstate', 'staticprimitives', 'namedtensors']
+package_dir={'': 'src'}
+
 try:
     from catkin_pkg.python_setup import generate_distutils_setup
     setup_args = generate_distutils_setup(
-        packages=['promp'],
-        package_dir={'': 'src'})
+        packages=packages,
+        package_dir=package_dir)
     setup(**setup_args)
 
 except ImportError:
@@ -16,8 +19,8 @@ except ImportError:
           author='Raphael Deimel',
           author_email='raphael.deimel@tu-berlin.de',
           url='http://www.mti-engage.tu-berlin.de/',
-          packages=['promp'],
-          package_dir={'': 'src'},
-          install_requires=['numpy', 'scipy', 'sklearn', 'hdf5storage']
+          packages=packages,
+          package_dir=package_dir,
+          install_requires=['numpy', 'scipy', 'sklearn', 'hdf5storage', 'pandas']
          )
 
