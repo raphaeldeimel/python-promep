@@ -80,12 +80,12 @@ class LTIGoal(object):
         rlabel_torque, glabel_torque = self.commonnames2rglabels['torque']
         rlabel_pos, glabel_pos = self.commonnames2rglabels['position']
         self.tns.registerBasisTensor('e_ktau',  (('r2', 'g2'),('r', 'g')), ((rlabel_torque, glabel_torque),(rlabel_torque, glabel_torque)) )
-        self.tns.registerTensor('Uktau',  (('d2',),('d',)), initial_values='identity')
+        self.tns.registerTensor('delta_d2d',  (('d2',),('d',)), initial_values='identity')
         self.tns.registerBasisTensor('e_kp',  (('r2', 'g2'),('r', 'g')), ((rlabel_torque, glabel_torque),(rlabel_pos, glabel_pos)))
         self.tns.registerTensor('Kp', (('d2',),('d',)) )
         
         
-        slice_tau = self.tns.registerContraction('e_ktau', 'Uktau')
+        slice_tau = self.tns.registerContraction('e_ktau', 'delta_d2d')
         slice_kp = self.tns.registerContraction('e_kp', 'Kp')
         if 'velocity' in self.commonnames2rg:
             rlabel_vel, glabel_vel = self.commonnames2rglabels['velocity']
