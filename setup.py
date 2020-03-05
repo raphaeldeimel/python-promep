@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-from distutils.core import setup
+from setuptools import setup
 
 packages=['promep', 'mechanicalstate', 'staticprimitives', 'namedtensors']
 package_dir={'': 'src'}
