@@ -618,24 +618,27 @@ class TensorNameSpace(object):
         return result_name
 
 
-    def registerSum(self, result_name=None, sumcoordinates=False, out_array=None, initial_values_out_array='keep',*args):
+    def registerSum(self, sumTerms=None, result_name=None, sumcoordinates=False, out_array=None, initial_values_out_array='keep'):
         """
         sum multiple tensors into a single tensor
         
         if sumcoordinates is true, then also sum all coordinates of a tensor
         """
+        if not isinstance(sumTerms, list):
+            sumTerms = [sumTerms]
+
         if result_name == None:
-            result_name = "sum({})".format(','.join( args))
+            result_name = "sum({})".format(','.join( sumTerms))
 
         if sumcoordinates:
             tuplesReference = ((),()) #result is a scalar
-            views = [self[name].data for name in args]
+            views = [self[name].data for name in sumTerms]
         else:
-            tuplesReference = self[args[0]].index_tuples #everything is coerced into this order
-            views = [ self._alignDimensions(tuplesReference, self[name].index_tuples,  self[name].data) for name in args ]
+            tuplesReference = self[sumTerms[0]].index_tuples #everything is coerced into this order
+            views = [ self._alignDimensions(tuplesReference, self[name].index_tuples,  self[name].data) for name in sumTerms ]
         
         self.registerTensor(result_name, tuplesReference, external_array=out_array, initial_values=initial_values_out_array)
-        self.registeredOperations[result_name] = ('sum', args, views, sumcoordinates)
+        self.registeredOperations[result_name] = ('sum', sumTerms, views, sumcoordinates)
         self.update_order.append(result_name)        
         return result_name
 

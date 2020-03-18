@@ -94,7 +94,7 @@ class LTIGoal(object):
             slice_kv = self.tns.registerContraction('e_kv', 'Kv' )
 
             #add together:
-            self.tns.registerSum(slice_tau, slice_kp, slice_kv, result_name='U')
+            self.tns.registerSum([slice_tau, slice_kp, slice_kv], result_name='U')
         else:
             self.tns.registerAddition(slice_tau, slice_kp, result_name='U') 
 

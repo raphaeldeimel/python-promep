@@ -125,7 +125,7 @@ class TimeIntegrator(object):
         sum_terms_noLinv.append(self.tns.registerContraction('e_pos_vel', Idt))
         sum_terms_noLinv.append(self.tns.registerContraction('e_imp_tau', Idt))
 
-        self.tns.registerSum(*sum_terms_noLinv, result_name='A_noLinv')
+        self.tns.registerSum(sum_terms_noLinv, result_name='A_noLinv')
         
         #from here on, Linv influences computation:
         index_first_equation_no_dt_change = len(self.tns.update_order)
@@ -147,7 +147,7 @@ class TimeIntegrator(object):
         self.tns.renameIndices(etaLinvdt, {'de': 'dl'}, inPlace=True)
         sum_terms_Linv.append(self.tns.registerContraction('e_vel_vel', etaLinvdt))
 
-        self.tns.registerSum(*sum_terms_Linv, result_name='A_Linvonly')
+        self.tns.registerSum( sum_terms_Linv, result_name='A_Linvonly')
         
         #finally, compute A:        
         self.tns.registerAddition('A_noLinv', 'A_Linvonly', result_name='A')
@@ -172,7 +172,7 @@ class TimeIntegrator(object):
             previous = self.tns.registerContraction(previous, '(A)^T', result_name = 'ACA^T')  #these are the changes to the covariance matrix
             self.tns.renameIndices('AC', {'rl_': 'r_', 'gl_': 'g_', 'dl_': 'd_', }, inPlace=True)
             self.tns.registerTranspose('AC')
-            self.tns.registerSum('ACA^T', 'AC', '(AC)^T', result_name='deltaCov')
+            self.tns.registerSum(['ACA^T', 'AC', '(AC)^T'], result_name='deltaCov')
 
 
             #add changes to the last mean, but also accumulate quantization errors over many timesteps:
