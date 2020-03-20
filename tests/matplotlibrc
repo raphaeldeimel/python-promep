@@ -1,6 +1,5 @@
 #tell matplotlib to use tex
 text.usetex: True
-text.latex.unicode: True
 #this makes eps files much nicer, as fonts do not get bitmapped. only works on linux:
 ps.usedistiller: xpdf
 
