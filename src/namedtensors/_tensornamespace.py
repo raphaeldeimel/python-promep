@@ -13,6 +13,7 @@ also to sample trajectories from a ProMeP
 import numpy as _np
 import copy as _copy
 import collections as _collections
+import sys
 
 #Attributes of indices, accessible through the namespace['indexname'].attribute interface
 indexDescription = _collections.namedtuple('IndexDescription', 'size values is_ordered_integers values_position')
@@ -222,6 +223,9 @@ class TensorNameSpace(object):
     def _compute_index_reverse_lookup(self, indexTuples):
         indexPositions = ({},{})
         indexPositionsAll = {}
+        if (sys.version_info < (3, 0)): #backwards-compatibility to python2: dicts weren't ordered back then
+            indexPositions = (_collections.OrderedDict(),_collections.OrderedDict())
+            indexPositionsAll = _collections.OrderedDict()
         pos = 0
         for l in range(2):
             for iname in indexTuples[l]:
