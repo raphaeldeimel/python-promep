@@ -110,7 +110,7 @@ class Mixer(object):
 
 
             #in order to avoid unnecessary computation, gather all equations we need to recompute up to the current slot:    
-            self._update_order_upto_slot.append(self.tns.update_order.copy())
+            self._update_order_upto_slot.append(list(self.tns.update_order))
             #self._update_order_upto_slot.append(self.tns.update_order.copy() + ['CovMixed_unsym', 'CovMixed_unsym2', '(CovMixed_unsym2)^T','CovMixed', 'MeanMixed'])
 
             include_everything_after = len(self.tns.update_order)
