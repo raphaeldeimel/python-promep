@@ -852,7 +852,38 @@ meansMatrix
         T_jointspace =_np.eye( (self.tns['r'].size*self.tns['d'].size) )
         T_jointspace.shape = (self.tns['r'].size,self.tns['d'].size,self.tns['rtilde'].size,self.tns['dtilde'].size) #r,d,rtilde, dtilde
         
+        durations = []
+
+        observations_converted = []
         for observation_idx, observation in enumerate(observations):            
+            if isinstance(observation, tuple):   #old interface: tuple of arrays
+                observations_converted.append(observation)
+            elif isinstance(observation, _pandas.DataFrame): #preferred one: pandas dataframe
+
+                samples_total = len(observation.index)
+                data_shape = (samples_total, self.tns['r'].size,self.tns['g'].size,self.tns['d'].size)
+                values = _np.zeros(data_shape)
+                for r_idx in range(self.tns['r'].size):
+                    for g_idx in range(self.tns['g'].size):
+                        name = self.rg_commonnames[r_idx][g_idx]
+                        for d_idx in range(8):                        
+                            try:
+                                v_observed = observation[ ('observed', name, str(d_idx) ) ]
+                            except KeyError:
+                                print("Warning:observation {}'s table does not contain column for {},{},{}".format(observation_idx, 'observed', name, d_idx))
+                                v_observed = 0.0
+                            values[:, r_idx, g_idx, d_idx] = v_observed
+                times = observation['observed','time','t']
+                phases = _np.zeros((samples_total,self.tns['g'].size ))
+                for i in range(self.tns['g'].size):
+                    phases[:,i] = observation['observed', 'phi', i]
+                #setup for joint-space learning:
+                Yrefs = _np.zeros( (samples_total, self.tns['r'].size,self.tns['g'].size,self.tns['d'].size) ) 
+                Xrefs = _np.zeros( (samples_total, self.tns['rtilde'].size,self.tns['g'].size,self.tns['dtilde'].size) ) 
+                Ts = _np.tile(T_jointspace, (samples_total,1,1,1,1))
+                observations_converted.append( (times, phases, values, Xrefs, Yrefs, Ts) )
+
+        for observation_idx, observation in enumerate(observations_converted):            
             if isinstance(observation, tuple):   #old interface: tuple of arrays
                 times, phases, values, Xrefs, Yrefs, Ts = observation
                 samples_total = phases.shape[0]
@@ -860,26 +891,6 @@ meansMatrix
                     raise ValueError()
                 if phases.shape[0] != times.shape[0]:
                     raise ValueError()
-            elif isinstance(observation, _pandas.DataFrame): #preferred one: pandas dataframe
-                samples_total = len(observation.index)
-                data_shape = (samples, self.tns['r'].size,self.tns['g'].size,self.tns['d'].size)
-                values = _np.zeros(data_shape)
-                for r_idx in range(self.tns['r'].size):
-                    for g_idx in range(self.tns['g'].size):
-                        name = self.rg_commonnames[r_idx, g_idx]
-                        for d_idx in range(8):                        
-                            try:
-                                values[:, r_idx, g_idx, d_idx] = observation[ ('observed', name, d_idx) ]
-                            except KeyError:
-                                print("Warning:observations do not contain values for {}".format(name))
-                                values[:, r_idx, g_idx, d_idx] = 0.0
-
-                times = observation['t']
-                phases = observation[['phi','dphidt','ddphidt2']]
-                #setup for joint-space learning:
-                Yrefs = _np.zeros( (samples, self.tns['r'].size,self.tns['g'].size,self.tns['d'].size) ) 
-                Xrefs = _np.zeros( (samples, self.tns['rtilde'].size,self.tns['g'].size,self.tns['dtilde'].size) ) 
-                Ts = _np.tile(T_jointspace, (samples,1,1,1,1))
             else:
                 raise ValueError("Unsupported data structure for observations argument")
 
@@ -941,7 +952,7 @@ meansMatrix
                     self.tns.setTensor('Xref',       Xrefs[sample,...], task_space_observations_indices ) 
                     self.tns.setTensor('Yref',       Yrefs[sample,...], target_space_observations_indices )                
                     self.tns.setTensor('T',             Ts[sample,...], task_map_observations_indices )
-                    self.tns.setTensor('phase',     phases[sample,...], (('g'),()) )
+                    self.tns.setTensor('phase',     phases[sample,:], (('g'),()) )
                     self.tns.update(*update_psionly) #computes PSI and O
                     tns_perSample.setTensor('Yobserved', values[sample,...], target_space_observations_indices )          
                     tns_perSample.update()
@@ -1008,15 +1019,16 @@ meansMatrix
         else:
                 print("Residual mean error (RMS) after {} iterations: {}".format(iteration_count, rms))
                 
-        self.expected_duration = _np.mean([times[-1] for(times, phases, values, Xrefs, Yrefs, Ts) in observations])
-        self.expected_duration_sigma = _np.std( [times[-1] - self.expected_duration for(times, phases, values, Xrefs, Yrefs, Ts) in observations], ddof=1)
+        durations = _np.array([times[-1]-times[0] for(times, phases, values, Xrefs, Yrefs, Ts) in observations_converted])
+        self.expected_duration = _np.mean(durations)
+        self.expected_duration_sigma = _np.std( durations - self.expected_duration)
         
         
         #estimate a phase profile too:
-        n_total = _np.sum([phases.shape[0] for times, phases, values, Xrefs, Yrefs, Ts in observations])
+        n_total = _np.sum([phases.shape[0] for times, phases, values, Xrefs, Yrefs, Ts in observations_converted])
         xy = _np.empty((n_total, 2))
         current_i = 0
-        for times, phases, values, Xrefs, Yrefs, Ts in observations:
+        for times, phases, values, Xrefs, Yrefs, Ts in observations_converted:
             next_i  = current_i + phases.shape[0]
             duration = (times[-1]-times[0]) #this is a heuristic - we could also optimize this to improve phase alignments
             xy[current_i:next_i,0] = times / duration
