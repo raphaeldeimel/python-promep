@@ -517,7 +517,7 @@ class TensorNameSpace(object):
                 view = self[name].data.view()
             else:                        
                 try:
-                    permuter = [ index_tuples[0].index(name) for name in align_result_to[0] ] + [ len(align_result_to[0])+index_tuples[1].index(name) for name in align_result_to[1] ]
+                    permuter = [ index_tuples[0].index(name_idx) for name_idx in align_result_to[0] ] + [ len(align_result_to[0])+index_tuples[1].index(name_idx) for name_idx in align_result_to[1] ]
                 except ValueError:
                     raise ValueError("tensors must have exactly the same indices! {} vs. {}".format(align_result_to, self[name].index_tuples) )
                 view = _np.transpose(self[name].data, axes=permuter)
