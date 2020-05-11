@@ -750,7 +750,7 @@ class TensorNameSpace(object):
         if _np.isreal(slice_name): #user obviously just wants to set all elements to a common value (e.g. 0)
             _np.copyto(slicedtensordata, slice_name)        
         else:
-            values_aligned = self._alignDimensions(sliced_indextuples, slice_namespace[slice_name].index_tuples , slice_namespace[slice_name].data)        
+            values_aligned = self._alignDimensions(sliced_indextuples, slice_namespace[slice_name].index_tuples , slice_namespace[slice_name].data)
             _np.copyto(slicedtensordata, values_aligned)
 
 
