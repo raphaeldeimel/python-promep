@@ -36,7 +36,7 @@ else:
 
 class TensorNameSpace(object):
     """
-    This is kind of a band-aid class to augment current numpy/tensorflow/pytorch versions with 
+    This is kind of a band-aid API to augment current numpy/tensorflow/pytorch versions with 
     named indices as well as providing the notion of upper and lower indices for proper tensor contraction semantics
     
     
@@ -45,7 +45,7 @@ class TensorNameSpace(object):
     Note: pytorch > 1.3.1 has experimental support for named indices, but they don't have a notion of upper/lower indices 
 
 
-    General concept:
+    General Tensor concept:
     
         Numpy's tensordot function requires us to specify matching index pairs as tuples of dimension numbers of the arrays representing the input tensors
         
@@ -66,6 +66,16 @@ class TensorNameSpace(object):
 
     Implementation Choices:
         * For tensor notation, the order of indices is irrelevant. We require matching index orders when doing binary operations though to simplify implementation
+    
+    
+    Usage:
+    
+        The class provides a sort of container that you can register named tensors in. Besides holding references to the actual data, it also provides an extensive set of meta-information such as maps between index name and index of the array dimension, available indices, the number of elements in an index, and whether an index is an upper or lower index
+        
+        In addition to this beancounting, it also provides a very,very basic method to construct computation graphs by registering operations on tensors. Once registered, actual (re-)computation is triggered by a separate update() method. This is conceptually equivalent to pytorch/tensorflow's 'graph-based execution' model. 
+        
+        By registering tensors and operations before computation, we can do a lot of basic sanity checks (index names, index sizes, automatic index alignment, etc..) once, and even do some very basic optimization such as using numpy views for "computing" the transpose operators. 
+                
     
     """
 
@@ -123,7 +133,7 @@ class TensorNameSpace(object):
 
     def cloneIndex(self, clonefrom, newname):
         """
-        Create a new index with identical size and values of thegiven index
+        Create a new index with identical size and values of the given index
         
         """
         if newname in self.index_names:
@@ -237,7 +247,7 @@ class TensorNameSpace(object):
 
     def registerBasisTensor(self, basistensorname, index_name_tuples,  index_value_tuples, ignoreLabels=False):
         """        
-        construct a orthonormal basis tensor by specifying 
+        construct an orthonormal basis tensor by specifying 
         
         Usually they are used to add a tensor to a slice of another tensor via contraction
         
