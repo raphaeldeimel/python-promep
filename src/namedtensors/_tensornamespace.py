@@ -151,7 +151,7 @@ class TensorNameSpace(object):
         Make the manager aware of a specific tensor and the shape of its indices
         
         description: 
-                Either a tuple of index tuples, e.g. (('a', 'b')('c',))
+                Either a tuple of index tuples, e.g. (('a', 'b'),('c',))
                 
                 Or a tensorDescription object, e.g. from another namespace
         

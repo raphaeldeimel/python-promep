@@ -118,7 +118,8 @@ class MechanicalStateDistribution(object):
 
         tensornamespace: namespace the data are defined/managed in 
         
-        meansName, covariancesName: nanamelookup_tablemes of the tensor in the tensor namespace
+        meansName, covariancesName: names of the tensors to use for 
+             mean and for covariances in the supplied tensor namespace
         
         precisionsName: optional tensor that holds inverses
 
