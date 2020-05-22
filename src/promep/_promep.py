@@ -1019,18 +1019,20 @@ meansMatrix
         else:
                 print("Residual mean error (RMS) after {} iterations: {}".format(iteration_count, rms))
                 
-        durations = _np.array([times[-1]-times[0] for(times, phases, values, Xrefs, Yrefs, Ts) in observations_converted])
+        alltimes = [times for(times, phases, values, Xrefs, Yrefs, Ts) in observations_converted]
+        durations = _np.array([times.tail(1).iloc[0]-times.head(1).iloc[0] for(times, phases, values, Xrefs, Yrefs, Ts) in observations_converted])
         self.expected_duration = _np.mean(durations)
         self.expected_duration_sigma = _np.std( durations - self.expected_duration)
         
+        print(durations)
+
         
         #estimate a phase profile too:
         n_total = _np.sum([phases.shape[0] for times, phases, values, Xrefs, Yrefs, Ts in observations_converted])
         xy = _np.empty((n_total, 2))
         current_i = 0
-        for times, phases, values, Xrefs, Yrefs, Ts in observations_converted:
+        for (times, phases, values, Xrefs, Yrefs, Ts), duration in zip(observations_converted, durations):
             next_i  = current_i + phases.shape[0]
-            duration = (times[-1]-times[0]) #this is a heuristic - we could also optimize this to improve phase alignments
             xy[current_i:next_i,0] = times / duration
             xy[current_i:next_i,1] = phases[:,0]
             current_i  = next_i
